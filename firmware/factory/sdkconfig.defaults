@@ -1,0 +1,4 @@
+# Factory-stage-only sdkconfig overrides (on top of ../common/sdkconfig.defaults).
+# This stage does very little, so we give it a smaller log level and disable
+# a few LVGL widgets it doesn't need to keep it lean.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

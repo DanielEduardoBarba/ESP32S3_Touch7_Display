@@ -1,0 +1,83 @@
+# Shared sdkconfig defaults for the Waveshare ESP32-S3-Touch-LCD-7
+# (ESP32-S3-N16R8: 16MB quad-SPI flash, 8MB octal-SPI PSRAM).
+#
+# Both ESP-IDF projects in this repo (firmware/factory and firmware/app)
+# include this file via their own sdkconfig.defaults using:
+#   set(SDKCONFIG_DEFAULTS "../common/sdkconfig.defaults;sdkconfig.defaults")
+# (see each project's CMakeLists.txt)
+#
+# Values here mostly mirror Waveshare's own recommended menuconfig settings
+# for this board (see https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-7),
+# using the safer 80MHz flash/PSRAM speed instead of the experimental 120MHz
+# option for maximum compatibility. See README.md for how to opt into 120MHz.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash / PSRAM ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# --- Performance / RTOS ---
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+
+# --- Custom partition table shared by both firmware stages ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"
+
+# --- USB / console ---
+# This board has TWO USB-C ports: one wired to the ESP32-S3's *native*
+# USB-Serial/JTAG peripheral, and one ("UART1" on the silkscreen) wired
+# through a separate CH343 USB-UART bridge chip to the classic UART0 pins.
+# Confirmed empirically that the native USB-JTAG port's auto-reset (used by
+# both esptool and idf.py monitor) is unreliable on this board -- it
+# frequently leaves the chip stuck in bootloader/download mode instead of
+# running the app, matching Waveshare's own docs which say to manually press
+# RESET after flashing when using that port.
+#
+# The "UART1" port doesn't have that problem (plain classic RTS/DTR
+# auto-reset works every time), so route the console there instead: classic
+# UART0, which is what the 2nd-stage bootloader already logs to by default
+# regardless of this setting. Use `build.sh`/`tools/dev_monitor.py` with the
+# board connected to "UART1", not the plain "USB" port.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE_115200=y
+
+# --- ESP32_Display_Panel: select the officially supported Waveshare board ---
+# (this drives RGB LCD timing, GT911 touch, and CH422G IO-expander wiring
+# automatically -- no custom pin configuration needed)
+CONFIG_ESP_PANEL_BOARD_DEFAULT_USE_SUPPORTED=y
+CONFIG_ESP_PANEL_BOARD_MANUFACTURER_WAVESHARE=y
+CONFIG_BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_7=y
+
+# --- LVGL (v8.4, configured via Kconfig instead of a hand-written lv_conf.h) ---
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_COLOR_16_SWAP=n
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_WARN=y
+CONFIG_LV_MEM_CUSTOM=y
+CONFIG_LV_MEMCPY_MEMSET_STD=y
+CONFIG_LV_ATTRIBUTE_FAST_MEM_IRAM=y
+CONFIG_LV_USE_PERF_MONITOR=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_16=y
+CONFIG_LV_USE_DROPDOWN=y
+CONFIG_LV_USE_MSGBOX=y
+CONFIG_LV_USE_KEYBOARD=y
+CONFIG_LV_USE_TEXTAREA=y
+CONFIG_LV_USE_LIST=y
+CONFIG_LV_USE_MENU=y
