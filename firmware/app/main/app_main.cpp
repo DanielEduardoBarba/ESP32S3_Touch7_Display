@@ -23,7 +23,9 @@
 #include "lvgl.h"
 
 #include "lvgl_v8_port.h"
+#include "machine_state.h"
 #include "rs485.h"
+#include "rs485_protocol.h"
 #include "storage.h"
 #include "ui/ui.h"
 #include "web_server.h"
@@ -33,12 +35,34 @@ using namespace esp_panel::board;
 
 static const char *TAG = "app";
 
+// board->begin() drives the CH422G IO-expander over I2C, which toggles the
+// LCD backlight/reset lines and briefly spikes current draw. On a marginal
+// 5V supply (e.g. some USB-A host ports/hubs/cables that can't sustain the
+// draw), that spike can sag the rail enough to glitch the I2C write and
+// fail `begin()` -- retrying with a short settle delay recovers from a
+// one-off transient without masking a truly dead/miswired board (it still
+// asserts if every attempt fails).
+static bool begin_board_with_retries(Board *b, int max_attempts = 3)
+{
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        if (attempt > 1) {
+            ESP_LOGW(TAG, "board->begin() failed (attempt %d/%d), retrying after power-rail settle delay...",
+                      attempt - 1, max_attempts);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+        if (b->begin()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "Initializing board");
     Board *board = new Board();
     board->init();
-    assert(board->begin());
+    assert(begin_board_with_retries(board));
 
     ESP_LOGI(TAG, "Initializing LVGL");
     lvgl_port_init(board->getLCD(), board->getTouch());
@@ -57,6 +81,8 @@ extern "C" void app_main(void)
 
     ESP_LOGI(TAG, "Starting RS485");
     rs485::init();
+    rs485_protocol::init();
+    machine_state::init();
 
     ESP_LOGI(TAG, "Starting web server");
     web_server::start();

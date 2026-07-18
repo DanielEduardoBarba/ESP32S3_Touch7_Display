@@ -2,8 +2,10 @@
 
 #include "lvgl.h"
 #include "ui_header.h"
-#include "ui_home.h"
 #include "ui_keyboard.h"
+#include "ui_machine.h"
+#include "ui_network.h"
+#include "ui_scene_manager.h"
 #include "ui_wifi.h"
 
 namespace ui {
@@ -18,9 +20,18 @@ void init(esp_panel::board::Board *board)
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_coord_t header_height = ui_header::build(screen);
-    ui_home::build(screen, header_height);
+
+    // Build both scenes up front (simpler and fast enough at this UI size
+    // than lazily creating them on first visit); the scene manager then
+    // just shows/hides whichever one is active.
+    lv_obj_t *machine_root = ui_machine::build(screen, header_height);
+    lv_obj_t *network_root = ui_network::build(screen, header_height);
+    ui_scene_manager::registerScenes(machine_root, network_root);
+    ui_scene_manager::show(ui_scene_manager::Scene::Machine); // Machine is the default/home scene
+
     ui_wifi::init(screen);
     ui_keyboard::init(screen);
 }
 
 } // namespace ui
+

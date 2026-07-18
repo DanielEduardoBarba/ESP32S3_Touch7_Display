@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Simple serial console for touch-esp32, Expo-Go style: watches the board's
-serial output live, and pressing 'r' rebuilds + reflashes + resets the board
-then goes right back to watching logs. No file-watching/hot-reload -- it's
-a manual trigger only, exactly like Expo Go's "press r to reload".
+Multi-device serial console for touch-esp32, Expo-Go style.
+
+Watches ALL connected boards' serial output at once (each line tagged with
+which device it came from), and lets you rebuild + reflash one, several, or
+all of them with a single keypress -- no file-watching/hot-reload, it's a
+manual trigger only, exactly like Expo Go's "press r to reload".
 
 Why not just `idf.py monitor`? On this board, the USB port enumerates as
 the ESP32-S3's *native* USB-Serial/JTAG peripheral (not a classic external
@@ -17,13 +19,23 @@ and reads, so whatever state the chip was already left in after flashing
 (running the app) is undisturbed.
 
 Usage:
-    python3 tools/dev_monitor.py --port /dev/ttyACM0 --stage app --repo-root /path/to/repo
+    python3 tools/dev_monitor.py --port /dev/ttyACM0 --port /dev/ttyACM1 \\
+        --stage app --repo-root /path/to/repo
+    (build.sh passes one --port per auto-detected device automatically;
+    you only need to pass --port yourself to override which devices are used)
 
 Keys (while this terminal is focused):
-    r         rebuild + reflash `--stage`, then resume watching logs
+    0         target ALL devices (this is the default on startup)
+    1-9       target only that device number (see the numbering with 'h')
+    b         build `--stage` only (compile check, no flash -- device-
+              independent, always builds regardless of the current target)
+    r         rebuild + reflash the TARGETED device(s), then resume logs
+    h         show the device list (which /dev/ttyACM... is which number)
+              and this key reference
     Ctrl+C    quit
 """
 import argparse
+import glob
 import os
 import select
 import subprocess
@@ -37,7 +49,19 @@ import serial
 RED = "\033[31m"
 YELLOW = "\033[33m"
 GREEN = "\033[32m"
+CYAN = "\033[36m"
+BOLD = "\033[1m"
 RESET = "\033[0m"
+
+# One color per device index (cycled if there are more devices than colors),
+# used to prefix that device's log lines so multiple boards' output is easy
+# to tell apart at a glance.
+DEVICE_COLORS = ["\033[36m", "\033[35m", "\033[33m", "\033[32m", "\033[34m", "\033[91m"]
+
+
+def default_ports():
+    """Auto-detects connected boards when no --port is given at all."""
+    return sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
 
 
 def open_port_passively(port: str, baud: int) -> serial.Serial:
@@ -64,42 +88,174 @@ def wait_for_port(port: str, timeout_s: float = 8.0) -> bool:
     return False
 
 
-def rebuild_and_flash(repo_root: str, stage: str, port: str) -> bool:
-    """Runs `./build.sh --build <stage>` then `./build.sh --flash <stage>`.
-    Returns True if both succeeded (i.e. the board was actually reset)."""
+class Device:
+    """One connected board: its serial connection, a per-device read
+    buffer (so we print whole lines, not arbitrary chunks), and enough
+    identity (index/color/tag) to make multi-device logs readable."""
+
+    def __init__(self, index: int, port: str, baud: int):
+        self.index = index
+        self.port = port
+        self.baud = baud
+        self.color = DEVICE_COLORS[(index - 1) % len(DEVICE_COLORS)]
+        self.buffer = b""
+        self.ser = None
+        self.connected = False
+        self._open()
+
+    def _open(self):
+        try:
+            self.ser = open_port_passively(self.port, self.baud)
+            self.connected = True
+        except (OSError, serial.SerialException):
+            self.ser = None
+            self.connected = False
+
+    def close(self):
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+        self.ser = None
+        self.connected = False
+
+    def tag(self) -> str:
+        return f"{self.color}[{self.index}:{os.path.basename(self.port)}]{RESET}"
+
+    def try_reconnect(self):
+        """Cheap, non-blocking check: if the device node exists again after
+        having disappeared (unplug, reset, mid-flash), reopen it. Doesn't
+        block the main loop or other devices' logs while waiting."""
+        if self.connected:
+            return
+        if os.path.exists(self.port):
+            self._open()
+            if self.connected:
+                print(f"{self.tag()} {GREEN}reconnected{RESET}")
+
+    def read_and_print(self):
+        """Reads whatever is available and prints complete lines, tagged
+        with this device's identity. Returns False if the read failed
+        (device went away), so the caller can mark it disconnected."""
+        try:
+            data = self.ser.read(self.ser.in_waiting or 1)
+        except (OSError, serial.SerialException):
+            return False
+        if data:
+            self.buffer += data
+            while b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                sys.stdout.write(f"{self.tag()} {line.decode(errors='replace')}\n")
+            sys.stdout.flush()
+        return True
+
+    def mark_disconnected(self, reason: str):
+        print(f"\n{self.tag()} {YELLOW}{reason}{RESET}")
+        self.close()
+
+
+def build_only(repo_root: str, stage: str, variant: str) -> None:
+    """Runs `./build.sh --build <stage> --variant <variant>` only -- no
+    flashing, no board reset, so every device's serial connection is left
+    completely undisturbed. Useful for a fast "does it compile" check."""
+    print(f"\n{YELLOW}==> Building '{stage}' for variant '{variant}' (compile check only, not flashing)...{RESET}")
+    build_sh = os.path.join(repo_root, "build.sh")
+    build = subprocess.run([build_sh, "--build", stage, "--variant", variant], cwd=repo_root)
+    if build.returncode != 0:
+        print(f"{RED}==> Build failed (exit {build.returncode}).{RESET}\n")
+    else:
+        print(f"{GREEN}==> Build succeeded. (Press 'r' to flash it.){RESET}\n")
+
+
+def rebuild_and_flash(repo_root: str, stage: str, variant: str, devices) -> None:
+    """Builds once (the same binary goes to every targeted device), then
+    flashes each targeted device in turn. Each device's serial connection is
+    closed right before its flash and reopened right after, exactly like
+    the single-device version -- other devices not being flashed keep their
+    connections open throughout, but note that ALL log output is paused for
+    the duration of this whole operation since it's one single-threaded
+    script (logs resume as soon as the last flash finishes)."""
     build_sh = os.path.join(repo_root, "build.sh")
 
-    print(f"\n{YELLOW}==> Rebuilding '{stage}'...{RESET}")
-    build = subprocess.run([build_sh, "--build", stage], cwd=repo_root)
+    print(f"\n{YELLOW}==> Rebuilding '{stage}' for variant '{variant}' (shared by all targeted devices)...{RESET}")
+    build = subprocess.run([build_sh, "--build", stage, "--variant", variant], cwd=repo_root)
     if build.returncode != 0:
         print(f"{RED}==> Build failed (exit {build.returncode}). Not flashing; resuming logs.{RESET}\n")
-        return False
+        return
 
-    print(f"{YELLOW}==> Flashing '{stage}' to {port}...{RESET}")
-    flash = subprocess.run([build_sh, "--flash", stage, "--port", port], cwd=repo_root)
-    if flash.returncode != 0:
-        print(f"{RED}==> Flash failed (exit {flash.returncode}). Resuming logs.{RESET}\n")
-        return False
+    for device in devices:
+        print(f"{YELLOW}==> Flashing '{stage}' to {device.tag()} ({device.port})...{RESET}")
+        device.close()
+        flash = subprocess.run([build_sh, "--flash", stage, "--variant", variant, "--port", device.port], cwd=repo_root)
+        if flash.returncode != 0:
+            print(f"{RED}==> Flash failed for {device.tag()} (exit {flash.returncode}).{RESET}")
+        else:
+            print(f"{GREEN}==> {device.tag()} reflashed.{RESET}")
+        # The board's native/USB peripheral drops off the bus for a moment
+        # during the actual reset; wait for it before moving on.
+        wait_for_port(device.port)
+        time.sleep(0.3)
+        device._open()
 
-    print(f"{GREEN}==> Reflash complete, resuming logs...{RESET}")
-    print(f"{YELLOW}    (If you don't see your app's logs below, this board's auto-reset isn't 100% reliable --{RESET}")
-    print(f"{YELLOW}     press the physical RESET button once.){RESET}\n")
-    return True
+    print(f"{GREEN}==> All targeted devices done, resuming logs...{RESET}")
+    print(f"{YELLOW}    (If a device's logs don't show up below, this board's auto-reset isn't 100% reliable --{RESET}")
+    print(f"{YELLOW}     press its physical RESET button once.){RESET}\n")
+
+
+def print_help(devices, stage: str, variant: str, target: int) -> None:
+    print(f"\n{BOLD}=== Devices ==={RESET}")
+    for d in devices:
+        status = f"{GREEN}connected{RESET}" if d.connected else f"{RED}disconnected{RESET}"
+        print(f"  {d.tag()} {d.port} [{status}]")
+
+    print(f"\n{BOLD}=== Keys ==={RESET}")
+    print("  0        Target ALL devices")
+    print("  1-9      Target only that device number")
+    print(f"  b        Build '{stage}' only (compile check, no flash)")
+    print("  r        Rebuild + reflash the TARGETED device(s), then resume logs")
+    print("  h        Show this help")
+    print("  Ctrl+C   Quit")
+
+    target_desc = "ALL" if target == 0 else f"device {target}"
+    print(f"\n{BOLD}Current target:{RESET} {target_desc}")
+    print(f"{BOLD}Board variant:{RESET} {variant}  (change with --variant 7|7b when starting the monitor)\n")
+
+
+def devices_for_target(devices, target: int):
+    if target == 0:
+        return [d for d in devices]
+    for d in devices:
+        if d.index == target:
+            return [d]
+    return []
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--port", required=True, help="Serial device, e.g. /dev/ttyACM0")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--port", action="append", dest="ports", default=None,
+                     help="Serial device to watch, e.g. /dev/ttyACM0. Repeatable. "
+                          "If omitted entirely, auto-detects all /dev/ttyUSB*|/dev/ttyACM* devices.")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--stage", default="app", choices=["factory", "app"],
-                     help="Which firmware project 'r' rebuilds/reflashes")
+                     help="Which firmware project 'r'/'b' build/reflash")
+    ap.add_argument("--variant", default="7", choices=["7", "7b"],
+                     help="Board hardware variant 'r'/'b' build/reflash with (default: 7). Must match "
+                          "whatever the connected device(s) actually are, or 'r' will flash the wrong config.")
     ap.add_argument("--repo-root", required=True, help="Path to the touch-esp32 repo root")
     args = ap.parse_args()
 
-    print(f"Watching {args.port} @ {args.baud} baud.")
-    print(f"Press 'r' to rebuild + reflash '{args.stage}' and resume watching. Ctrl+C to quit.\n")
+    port_list = args.ports if args.ports else default_ports()
+    if not port_list:
+        print(f"{RED}No serial devices found (looked for /dev/ttyUSB* and /dev/ttyACM*).{RESET}")
+        print("Plug in a board and make sure your user is in the 'dialout' group (./build.sh --setup).")
+        return 1
 
-    ser = open_port_passively(args.port, args.baud)
+    devices = [Device(i + 1, port, args.baud) for i, port in enumerate(port_list)]
+    target = 0  # 0 = all devices (the default)
+
+    print(f"Watching {len(devices)} device(s) @ {args.baud} baud. Press 'h' for help.\n")
+    print_help(devices, args.stage, args.variant, target)
 
     # cbreak mode: read one keystroke at a time with no need to press Enter
     # (like Expo Go's "press r to reload"), while still letting Ctrl+C raise
@@ -110,55 +266,66 @@ def main() -> int:
 
     try:
         while True:
+            # Only select() on devices that are currently connected; a
+            # disconnected device is retried cheaply below instead, so one
+            # board being unplugged/mid-reset never blocks the others.
+            ser_to_device = {d.ser: d for d in devices if d.connected}
+            read_list = [sys.stdin] + list(ser_to_device.keys())
+
             try:
-                # Block briefly waiting for either a keystroke or serial
-                # data, so we're not busy-polling the CPU while idle.
-                readable, _, _ = select.select([sys.stdin, ser], [], [], 0.05)
+                readable, _, _ = select.select(read_list, [], [], 0.05)
             except (OSError, ValueError):
-                # The port's file descriptor died out from under us -- most
-                # likely the board was unplugged, power-cycled, or its
-                # RESET button was pressed (this board's auto-reset circuit
-                # isn't fully reliable, so a manual RESET press after
-                # flashing is expected -- see Waveshare's own docs). Wait
-                # for it to come back instead of crashing.
-                print(f"\n{YELLOW}==> Lost connection to {args.port}, waiting for it to reappear...{RESET}")
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-                wait_for_port(args.port)
-                time.sleep(0.3)
-                ser = open_port_passively(args.port, args.baud)
-                continue
+                # One of the fds died between building the list and
+                # selecting on it (race with a device disappearing) --
+                # just loop again, the dead one will fail its own read/be
+                # dropped by try_reconnect() on the next pass.
+                readable = []
 
-            if sys.stdin in readable:
-                ch = sys.stdin.read(1)
-                if ch.lower() == "r":
-                    ser.close()
-                    reset_happened = rebuild_and_flash(args.repo_root, args.stage, args.port)
-                    if reset_happened:
-                        # The board's native USB peripheral drops off the bus
-                        # for a moment during the actual reset; wait for it.
-                        wait_for_port(args.port)
-                        time.sleep(0.3)
-                    ser = open_port_passively(args.port, args.baud)
+            for r in readable:
+                if r is sys.stdin:
+                    ch = sys.stdin.read(1)
 
-            if ser in readable:
-                try:
-                    data = ser.read(ser.in_waiting or 1)
-                except (OSError, serial.SerialException):
-                    continue  # handled by the reconnect logic above on the next loop
-                if data:
-                    sys.stdout.buffer.write(data)
-                    sys.stdout.flush()
+                    if ch == "h":
+                        print_help(devices, args.stage, args.variant, target)
+
+                    elif ch.isdigit():
+                        n = int(ch)
+                        if n == 0:
+                            target = 0
+                            print(f"\n{CYAN}==> Target changed to ALL devices.{RESET}\n")
+                        elif any(d.index == n for d in devices):
+                            target = n
+                            d = next(d for d in devices if d.index == n)
+                            print(f"\n{CYAN}==> Target changed to device {n} ({d.port}).{RESET}\n")
+                        else:
+                            print(f"\n{RED}==> No device {n} (only {len(devices)} connected). "
+                                  f"Target unchanged.{RESET}\n")
+
+                    elif ch.lower() == "b":
+                        build_only(args.repo_root, args.stage, args.variant)
+
+                    elif ch.lower() == "r":
+                        targeted = devices_for_target(devices, target)
+                        if not targeted:
+                            print(f"\n{RED}==> No devices match the current target; nothing to flash.{RESET}\n")
+                        else:
+                            rebuild_and_flash(args.repo_root, args.stage, args.variant, targeted)
+
+                else:
+                    device = ser_to_device[r]
+                    if not device.read_and_print():
+                        device.mark_disconnected("lost connection, waiting for it to reappear...")
+
+            # Cheap, non-blocking retry for any device that's currently down.
+            for d in devices:
+                if not d.connected:
+                    d.try_reconnect()
     except KeyboardInterrupt:
         pass
     finally:
         termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term_settings)
-        try:
-            ser.close()
-        except Exception:
-            pass
+        for d in devices:
+            d.close()
         print("\nExiting monitor.")
     return 0
 

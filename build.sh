@@ -15,18 +15,38 @@
 #   ./build.sh --install [stage]    web + build + flash in one go (default:
 #                                    all). This is what you want for a brand
 #                                    new board.
-#   ./build.sh --run [stage]        Build + flash + immediately watch live
-#                                    serial output, all in one command
-#                                    (stage: factory|app, default: app).
-#                                    While watching: press 'r' to rebuild +
-#                                    reflash + resume (Expo-Go style manual
-#                                    reload), Ctrl+C to quit.
-#   ./build.sh --monitor [stage]    Just watch live serial output (same 'r'
-#                                    reload shortcut as --run).
+#   ./build.sh --run [stage]        Connect and watch live serial output from
+#                                    EVERY connected board at once (stage:
+#                                    factory|app, default: app) -- does NOT
+#                                    build or flash on startup. Each device's
+#                                    log lines are tagged/colored so you can
+#                                    tell multiple boards apart. While
+#                                    watching: press '0' to target ALL
+#                                    devices (default), '1'-'9' to target
+#                                    just that device number, 'b' to build
+#                                    only (compile check), 'r' to rebuild +
+#                                    reflash + resume the TARGETED device(s)
+#                                    (Expo-Go style manual reload), 'h' for a
+#                                    help menu (which /dev/ttyACM... is which
+#                                    device number, plus this key reference),
+#                                    Ctrl+C to quit.
+#   ./build.sh --monitor [stage]    Same as --run (identical behavior; kept
+#                                    as a separate name for clarity).
 #   ./build.sh --menuconfig <stage> Open idf.py menuconfig for one stage.
 #   ./build.sh --clean [stage]      Remove build/ dirs.
 #   ./build.sh --port /dev/ttyXXX   Override auto-detected serial port for
 #                                    any of the above (can appear anywhere).
+#   ./build.sh --variant 7|7b       Select board hardware revision (default:
+#                                    7). Waveshare ESP32-S3-Touch-LCD-7 (the
+#                                    original, ST7262 LCD driver) vs -7B (the
+#                                    newer revision, ST7701 LCD driver -- not
+#                                    yet officially supported upstream, see
+#                                    firmware/README.md "Board variants").
+#                                    Applies to build/flash/install/run/
+#                                    monitor/menuconfig/clean; can appear
+#                                    anywhere. Switching variants on a stage
+#                                    that was already built for the other one
+#                                    auto-cleans its stale build output.
 #   ./build.sh --help
 #
 # Notes:
@@ -34,14 +54,18 @@
 #     'dialout' group (e.g. right after the first `--setup` run), any
 #     command that needs the serial port transparently re-runs itself via
 #     `sg dialout` -- you don't need to log out/in first.
-#   - If you have more than one ESP32/serial device plugged in, pass
-#     `--port /dev/ttyXXX` to pick a specific one; otherwise the first
-#     /dev/ttyUSB*|/dev/ttyACM* found is used.
+#   - --build/--flash/--install act on exactly ONE board: if you have more
+#     than one ESP32/serial device plugged in, pass `--port /dev/ttyXXX` to
+#     pick which one; otherwise the first /dev/ttyUSB*|/dev/ttyACM* found is
+#     used. --run/--monitor is the exception -- it watches ALL connected
+#     boards by default (use its '1'-'9' keys to target just one for
+#     reflashing), unless you also pass --port here to restrict it to one.
 #
 # Examples:
 #   ./build.sh --setup
 #   ./build.sh --install
-#   ./build.sh --run app            # iterate: build, flash, watch logs
+#   ./build.sh --install --variant 7b   # for a Waveshare -7B board
+#   ./build.sh --run app            # watch all boards; 0/1-9 target, b/r build/flash, h help
 #   ./build.sh --build app && ./build.sh --flash app --port /dev/ttyUSB0
 #
 set -euo pipefail
@@ -61,6 +85,10 @@ FLASH_BAUD="${FLASH_BAUD:-921600}"
 NODE_MIN_MAJOR=18
 
 PORT_OVERRIDE=""
+# Board variant: "7" (original, Kconfig-supported) or "7b" (newer revision,
+# custom board config -- see firmware/README.md "Board variants"). Applies
+# to --build/--flash/--install/--run/--monitor/--menuconfig/--clean.
+VARIANT="7"
 # Kept so ensure_dialout_group() can re-exec this exact invocation via `sg`.
 ORIGINAL_ARGS=("$@")
 
@@ -73,7 +101,7 @@ warn() { echo -e "${c_bold}${c_yellow}==>${c_reset} $*"; }
 err()  { echo -e "${c_bold}${c_red}==>${c_reset} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # --------------------------------------------------------------------------
 # Setup (fresh machine bootstrap)
@@ -222,6 +250,26 @@ find_esp32_port() {
     fi
 }
 
+# Lists every candidate serial device, one per line (used by the multi-device
+# monitor, which -- unlike single-target flash/build -- watches ALL of them
+# by default instead of picking just one).
+find_all_esp32_ports() {
+    if [[ -n "$PORT_OVERRIDE" ]]; then
+        echo "$PORT_OVERRIDE"
+        return
+    fi
+
+    local candidates=()
+    shopt -s nullglob
+    candidates+=(/dev/ttyUSB* /dev/ttyACM*)
+    shopt -u nullglob
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        die "No /dev/ttyUSB* or /dev/ttyACM* device found. Plug in at least one board, and make sure your user is in the 'dialout' group (./build.sh --setup)."
+    fi
+    printf '%s\n' "${candidates[@]}"
+}
+
 # --------------------------------------------------------------------------
 # partitions.csv lookup (name -> hex offset)
 # --------------------------------------------------------------------------
@@ -261,8 +309,8 @@ cmd_build() {
     local stage="${1:-all}"
     ensure_idf_env
     case "$stage" in
-        factory) idf.py -C "$(stage_dir factory)" build ;;
-        app)     idf.py -C "$(stage_dir app)" build ;;
+        factory) ensure_variant_consistency factory; idf.py -C "$(stage_dir factory)" build ;;
+        app)     ensure_variant_consistency app; idf.py -C "$(stage_dir app)" build ;;
         all)     cmd_build factory; cmd_build app ;;
         *) die "Unknown stage '$stage' (expected factory|app|all)" ;;
     esac
@@ -270,6 +318,7 @@ cmd_build() {
 
 flash_factory() {
     local port="$1"
+    ensure_variant_consistency factory
     log "Flashing 'factory' stage (bootloader + partition table + factory app) to $port ..."
     idf.py -C "$(stage_dir factory)" -p "$port" -b "$FLASH_BAUD" flash
 }
@@ -277,6 +326,7 @@ flash_factory() {
 flash_app() {
     local port="$1"
     ensure_idf_env
+    ensure_variant_consistency app
     log "Building 'app' stage ..."
     idf.py -C "$(stage_dir app)" build
 
@@ -340,32 +390,43 @@ cmd_install() {
 cmd_monitor() {
     local stage="${1:?Usage: ./build.sh --monitor <factory|app>}"
     ensure_idf_env
-    local port; port="$(find_esp32_port)"
+
+    # Unlike --flash/--build (which act on exactly one board), the monitor
+    # watches EVERY connected board by default (target '0' inside it), each
+    # log line tagged with which device produced it. Pass one --port per
+    # detected device; --port /dev/ttyXXX at the build.sh level still works
+    # to restrict this to a single device if you only want to watch one.
+    local ports=()
+    while IFS= read -r p; do
+        ports+=(--port "$p")
+    done < <(find_all_esp32_ports)
+
     # NOTE: we deliberately don't use `idf.py monitor` here. It resets the
     # board on connect (via RTS/DTR) to guarantee it captures the full boot
     # log -- but on this board's native USB-Serial/JTAG port, that same
     # reset sequence leaves the chip sitting in bootloader/download mode
     # instead of running the app. Our own tools/dev_monitor.py never touches
-    # RTS/DTR, so it just watches whatever is already running, and adds an
-    # Expo-Go-style "press r to rebuild+reflash+resume" shortcut.
-    python3 "$SCRIPT_DIR/tools/dev_monitor.py" --port "$port" --stage "$stage" --repo-root "$SCRIPT_DIR"
+    # RTS/DTR, so it just watches whatever is already running, and adds
+    # Expo-Go-style "press r to rebuild+reflash+resume" / device-targeting
+    # shortcuts (press 'h' inside it for the full key reference).
+    python3 "$SCRIPT_DIR/tools/dev_monitor.py" "${ports[@]}" --stage "$stage" --variant "$VARIANT" --repo-root "$SCRIPT_DIR"
 }
 
-# Build + flash + immediately watch live serial output, in one command --
-# the typical "change code, see what happens on real hardware" loop.
+# Just connects and watches live serial output from every connected board --
+# no build or flash on startup. Use the monitor's own keys to do that on
+# demand: '0'/'1'-'9' pick which device(s) are targeted, 'b' builds, 'r'
+# rebuilds + reflashes the targeted device(s) + resumes, 'h' shows a full
+# reference (including which /dev/ttyACM... is which device number). This is
+# the typical "leave it running and iterate" loop: start it once, then
+# press 'r' whenever you want to try new code on one or all boards, instead
+# of waiting through a build+flash every time you just want to glance at logs.
 # Defaults to the 'app' stage since that's what you iterate on day-to-day;
 # 'factory' is rarely touched once it's on the board.
 cmd_run() {
     local stage="${1:-app}"
     if [[ "$stage" == "all" ]]; then
-        cmd_build all
-        cmd_flash all
-        stage="app" # monitor the app stage afterwards (most relevant logs)
-    else
-        cmd_build "$stage"
-        cmd_flash "$stage"
+        stage="app" # monitor the app stage by default (most relevant logs)
     fi
-    log "Flashed. Watching live serial output for '$stage' (press 'r' to rebuild+reflash+resume, Ctrl+C to quit)..."
     cmd_monitor "$stage"
 }
 
@@ -378,12 +439,37 @@ cmd_menuconfig() {
 cmd_clean() {
     local stage="${1:-all}"
     case "$stage" in
-        factory) rm -rf "$(stage_dir factory)/build" ;;
-        app)     rm -rf "$(stage_dir app)/build" ;;
-        all)     rm -rf "$(stage_dir factory)/build" "$(stage_dir app)/build" ;;
+        factory) rm -rf "$(stage_dir factory)/build" "$(stage_dir factory)/sdkconfig" ;;
+        app)     rm -rf "$(stage_dir app)/build" "$(stage_dir app)/sdkconfig" ;;
+        all)     rm -rf "$(stage_dir factory)/build" "$(stage_dir factory)/sdkconfig" "$(stage_dir app)/build" "$(stage_dir app)/sdkconfig" ;;
         *) die "Unknown stage '$stage' (expected factory|app|all)" ;;
     esac
     log "Cleaned build output for: $stage"
+}
+
+# --------------------------------------------------------------------------
+# Board variant tracking
+# --------------------------------------------------------------------------
+# sdkconfig is only regenerated from sdkconfig.defaults* when it doesn't
+# already exist (or on `idf.py fullclean`/reconfigure) -- so switching
+# --variant on a stage that was already built with a *different* variant
+# needs its stale build/ and sdkconfig wiped first, or the old variant's
+# settings would silently stick around. This tracks the last variant each
+# stage was built with (in a marker file that -- unlike build/ -- survives
+# `--clean`) and auto-cleans exactly when it changes.
+variant_marker_file() { echo "$(stage_dir "$1")/.build_variant"; }
+
+ensure_variant_consistency() {
+    local stage="$1"
+    local marker; marker="$(variant_marker_file "$stage")"
+    if [[ -f "$marker" ]]; then
+        local previous; previous="$(cat "$marker")"
+        if [[ "$previous" != "$VARIANT" ]]; then
+            warn "Stage '$stage' was last built for variant '$previous'; switching to '$VARIANT' -- cleaning stale build output and sdkconfig first."
+            rm -rf "$(stage_dir "$stage")/build" "$(stage_dir "$stage")/sdkconfig"
+        fi
+    fi
+    echo "$VARIANT" > "$marker"
 }
 
 # --------------------------------------------------------------------------
@@ -392,7 +478,7 @@ cmd_clean() {
 ACTION=""
 STAGE_ARG=""
 
-# First pass: pull out --port anywhere in the args.
+# First pass: pull out --port/--variant anywhere in the args.
 args=("$@")
 filtered=()
 i=0
@@ -400,12 +486,20 @@ while [[ $i -lt ${#args[@]} ]]; do
     if [[ "${args[$i]}" == "--port" ]]; then
         i=$((i+1))
         PORT_OVERRIDE="${args[$i]:-}"
+    elif [[ "${args[$i]}" == "--variant" ]]; then
+        i=$((i+1))
+        VARIANT="${args[$i]:-}"
+        case "$VARIANT" in
+            7|7b) ;;
+            *) die "Unknown --variant '$VARIANT' (expected 7 or 7b)" ;;
+        esac
     else
         filtered+=("${args[$i]}")
     fi
     i=$((i+1))
 done
 set -- "${filtered[@]+"${filtered[@]}"}"
+export TOUCH_ESP32_VARIANT="$VARIANT"
 
 # Sets STAGE_ARG from the next positional arg if it's present and doesn't
 # look like another flag (e.g. `--build app` vs just `--build`), then shifts

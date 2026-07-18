@@ -1,5 +1,6 @@
 #include "web_server.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 
+#include "machine_state.h"
 #include "ota_handler.h"
 #include "storage.h"
 #include "wifi_manager.h"
@@ -23,6 +25,12 @@ const char *TAG = "web_server";
 
 std::mutex s_scan_mutex;
 std::vector<wifi_manager::ApInfo> s_latest_scan;
+
+// --- WebSocket state (see machine_state.h for the sync behavior this
+// implements) ---
+httpd_handle_t s_server = nullptr;
+std::mutex s_ws_mutex;
+std::vector<int> s_ws_client_fds;
 
 bool endsWith(const std::string &s, const char *suffix)
 {
@@ -102,6 +110,7 @@ esp_err_t apiStatusHandler(httpd_req_t *req)
     cJSON *wifi = cJSON_CreateObject();
     cJSON_AddStringToObject(wifi, "state", wifiStateToString(wifi_manager::state()));
     cJSON_AddStringToObject(wifi, "ssid", wifi_manager::currentSsid().c_str());
+    cJSON_AddStringToObject(wifi, "saved_ssid", wifi_manager::savedSsid().c_str());
     cJSON_AddStringToObject(wifi, "ip", wifi_manager::ipAddress().c_str());
     cJSON_AddNumberToObject(wifi, "rssi", wifi_manager::rssi());
     cJSON_AddItemToObject(root, "wifi", wifi);
@@ -189,6 +198,140 @@ esp_err_t apiWifiConnectHandler(httpd_req_t *req)
     return ESP_OK;
 }
 
+esp_err_t apiWifiForgetHandler(httpd_req_t *req)
+{
+    wifi_manager::forget();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"forgotten\":true}");
+    return ESP_OK;
+}
+
+// --- WebSocket: makes the web UI a live extension of the touchscreen -----
+
+std::string buildStateJson(const machine_state::State &state)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "dial_value", state.dial_value);
+    cJSON_AddBoolToObject(root, "toggle_state", state.toggle_state);
+    char *json = cJSON_PrintUnformatted(root);
+    std::string result(json);
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return result;
+}
+
+/** Sends `json` to one client; if the send fails (client gone), drops it
+ *  from our list so we stop wasting time on it. Safe to call from any task
+ *  (uses the *_async send variant), which is what lets machine_state.cpp's
+ *  RS485/local-UI callers broadcast without caring which task they run on. */
+void sendJsonToFd(int fd, const std::string &json)
+{
+    // Guard against socket-fd reuse: if this client disconnected and the OS
+    // recycled its fd number for a NEW plain-HTTP connection, the fd would
+    // still be in our list but no longer speak WebSocket -- sending a WS
+    // frame at it would corrupt that unrelated response.
+    if (httpd_ws_get_fd_info(s_server, fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
+        std::lock_guard<std::mutex> lock(s_ws_mutex);
+        s_ws_client_fds.erase(std::remove(s_ws_client_fds.begin(), s_ws_client_fds.end(), fd),
+                               s_ws_client_fds.end());
+        return;
+    }
+
+    httpd_ws_frame_t ws_pkt = {};
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    ws_pkt.payload = reinterpret_cast<uint8_t *>(const_cast<char *>(json.data()));
+    ws_pkt.len = json.size();
+
+    if (httpd_ws_send_frame_async(s_server, fd, &ws_pkt) != ESP_OK) {
+        std::lock_guard<std::mutex> lock(s_ws_mutex);
+        s_ws_client_fds.erase(std::remove(s_ws_client_fds.begin(), s_ws_client_fds.end(), fd),
+                               s_ws_client_fds.end());
+    }
+}
+
+/** Registered with machine_state::onStateChange(); pushes the new state to
+ *  every connected browser, whatever originally caused the change (local
+ *  touchscreen, RS485, or even another browser). */
+void broadcastState(const machine_state::State &state)
+{
+    if (s_server == nullptr) {
+        return;
+    }
+    std::string json = buildStateJson(state);
+
+    std::vector<int> fds_copy;
+    {
+        std::lock_guard<std::mutex> lock(s_ws_mutex);
+        fds_copy = s_ws_client_fds;
+    }
+    for (int fd : fds_copy) {
+        sendJsonToFd(fd, json);
+    }
+}
+
+esp_err_t wsHandler(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+
+    if (req->method == HTTP_GET) {
+        // esp_http_server has already completed the low-level WS handshake
+        // by the time this is called with method GET -- just remember this
+        // client and bring it up to date with the current state.
+        {
+            std::lock_guard<std::mutex> lock(s_ws_mutex);
+            if (std::find(s_ws_client_fds.begin(), s_ws_client_fds.end(), fd) == s_ws_client_fds.end()) {
+                s_ws_client_fds.push_back(fd);
+            }
+        }
+        sendJsonToFd(fd, buildStateJson(machine_state::current()));
+        return ESP_OK;
+    }
+
+    // Any other invocation means an actual WS data frame arrived. Read it
+    // in the standard two-step way: first with no buffer to learn the
+    // length, then again into a buffer sized for it.
+    httpd_ws_frame_t ws_pkt = {};
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    esp_err_t err = httpd_ws_recv_frame(req, &ws_pkt, 0);
+    if (err != ESP_OK || ws_pkt.len == 0) {
+        return err;
+    }
+
+    std::string body(ws_pkt.len, '\0');
+    ws_pkt.payload = reinterpret_cast<uint8_t *>(body.data());
+    err = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    cJSON *json = cJSON_ParseWithLength(body.data(), body.size());
+    if (json == nullptr) {
+        return ESP_OK; // ignore malformed messages rather than dropping the connection
+    }
+
+    cJSON *type_item = cJSON_GetObjectItem(json, "type");
+    if (cJSON_IsString(type_item)) {
+        if (std::strcmp(type_item->valuestring, "dial") == 0) {
+            cJSON *value_item = cJSON_GetObjectItem(json, "value");
+            if (cJSON_IsNumber(value_item)) {
+                int value = value_item->valueint;
+                value = std::max(0, std::min(100, value));
+                // Treated exactly like a touchscreen drag-release: moves the
+                // on-screen dial AND sends an RS485 packet to the other board.
+                machine_state::setDialFromWeb(static_cast<uint8_t>(value));
+            }
+        } else if (std::strcmp(type_item->valuestring, "toggle") == 0) {
+            cJSON *state_item = cJSON_GetObjectItem(json, "state");
+            if (cJSON_IsBool(state_item)) {
+                machine_state::setToggleFromWeb(cJSON_IsTrue(state_item));
+            }
+        }
+    }
+    cJSON_Delete(json);
+
+    return ESP_OK;
+}
+
 } // namespace
 
 void start()
@@ -205,8 +348,7 @@ void start()
     config.stack_size = 8192;
     config.lru_purge_enable = true;
 
-    httpd_handle_t server = nullptr;
-    if (httpd_start(&server, &config) != ESP_OK) {
+    if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
         return;
     }
@@ -214,14 +356,22 @@ void start()
     static const httpd_uri_t status_uri = {"/api/status", HTTP_GET, apiStatusHandler, nullptr};
     static const httpd_uri_t scan_uri = {"/api/wifi/scan", HTTP_GET, apiWifiScanHandler, nullptr};
     static const httpd_uri_t connect_uri = {"/api/wifi/connect", HTTP_POST, apiWifiConnectHandler, nullptr};
+    static const httpd_uri_t forget_uri = {"/api/wifi/forget", HTTP_POST, apiWifiForgetHandler, nullptr};
     static const httpd_uri_t ota_uri = {"/api/ota", HTTP_POST, ota_handler::handlePost, nullptr};
+    static const httpd_uri_t ws_uri = {"/ws", HTTP_GET, wsHandler, nullptr, true};
     static const httpd_uri_t static_uri = {"/*", HTTP_GET, staticFileHandler, nullptr};
 
-    httpd_register_uri_handler(server, &status_uri);
-    httpd_register_uri_handler(server, &scan_uri);
-    httpd_register_uri_handler(server, &connect_uri);
-    httpd_register_uri_handler(server, &ota_uri);
-    httpd_register_uri_handler(server, &static_uri); // must be registered last (wildcard)
+    httpd_register_uri_handler(s_server, &status_uri);
+    httpd_register_uri_handler(s_server, &scan_uri);
+    httpd_register_uri_handler(s_server, &connect_uri);
+    httpd_register_uri_handler(s_server, &forget_uri);
+    httpd_register_uri_handler(s_server, &ota_uri);
+    httpd_register_uri_handler(s_server, &ws_uri);
+    httpd_register_uri_handler(s_server, &static_uri); // must be registered last (wildcard)
+
+    // Whenever the Machine scene's state changes for ANY reason (touchscreen,
+    // RS485, or another browser), push the new state to every connected client.
+    machine_state::onStateChange(broadcastState);
 
     ESP_LOGI(TAG, "Web server listening on port %d (serving from %s)", config.server_port, storage::webRootPath());
 }

@@ -10,14 +10,22 @@ namespace {
 
 const char *TAG = "rs485";
 
-// TODO: verify these against your board revision's schematic
-// (https://files.waveshare.com/wiki/ESP32-S3-Touch-LCD-7/ESP32-S3-Touch-LCD-7-Sch.pdf).
-// The Waveshare wiki's "02_RS485_Test" demo uses UART1 for the RS485 header;
-// exact TX/RX GPIOs vary by revision, so they're placeholders here.
+// RS485 pins confirmed from Waveshare's OFFICIAL demos for BOTH board
+// variants (identical on each):
+//   - "7":  ESP32-S3-Touch-LCD-7-Demo  Arduino/examples/02_RS485_Test: RX=15, TX=16
+//   - "7B": github.com/waveshareteam/ESP32-S3-Touch-LCD-7B
+//           examples/Arduino/examples/05_RS485: RX=15, TX=16
+// (An earlier revision of this file had placeholder TX=17/RX=18 -- those are
+// RGB LCD data lines on both boards, which both broke RS485 AND fought the
+// display signals. Never reuse 17/18 here.)
 constexpr uart_port_t RS485_UART = UART_NUM_1;
-constexpr int RS485_TX_GPIO = 17;
-constexpr int RS485_RX_GPIO = 18;
-constexpr int RS485_BAUD_RATE = 9600;
+constexpr int RS485_TX_GPIO = 16;
+constexpr int RS485_RX_GPIO = 15;
+// Same rate as Waveshare's own RS485 demos for these boards. The "Machine
+// sync" packet protocol (see rs485_protocol.h) only sends a handful of
+// bytes per user action, so throughput is irrelevant -- reliability wins.
+// (Both ends of the bus must always use the same baud rate.)
+constexpr int RS485_BAUD_RATE = 115200;
 constexpr int RS485_RX_BUF_SIZE = 512;
 
 RxCallback s_rx_cb;

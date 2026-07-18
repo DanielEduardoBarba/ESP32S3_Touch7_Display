@@ -4,6 +4,7 @@ export interface StatusResponse {
   wifi: {
     state: WifiState
     ssid: string
+    saved_ssid: string
     ip: string
     rssi: number
   }
@@ -37,4 +38,8 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ssid, password }),
     }).then((r) => json<{ connecting: boolean }>(r)),
+
+  wifiForget: () =>
+    fetch('/api/wifi/forget', { method: 'POST' }).then((r) => json<{ forgotten: boolean }>(r)),
 }
+

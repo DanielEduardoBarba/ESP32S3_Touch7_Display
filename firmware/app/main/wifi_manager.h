@@ -44,10 +44,21 @@ void startScan();
  *  the credentials to NVS on success so autoConnect() can use them later. */
 void connect(const std::string &ssid, const std::string &password);
 
+/** Disconnects (if connected) and erases any saved credentials from NVS, so
+ *  autoConnect() won't try this network again on the next boot. Safe to call
+ *  even if nothing is currently connected/saved. */
+void forget();
+
 State state();
 std::string currentSsid();
 std::string ipAddress();
 int8_t rssi();
+
+/** The SSID currently saved in NVS for autoConnect(), or empty if none.
+ *  Unlike currentSsid(), this reflects what's persisted rather than the
+ *  live connection state -- lets the UI show a "Forget" option for a saved
+ *  network even while it's disconnected/out of range. */
+std::string savedSsid();
 
 /** Registers an additional scan-results subscriber (does not replace any
  *  previously-registered ones). */

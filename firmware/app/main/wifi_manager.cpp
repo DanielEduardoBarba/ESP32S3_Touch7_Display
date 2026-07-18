@@ -64,6 +64,20 @@ bool loadCredentials(std::string &ssid, std::string &password)
     return ok;
 }
 
+void eraseCredentials()
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    // erase_key returns ESP_ERR_NVS_NOT_FOUND if there was nothing saved --
+    // that's fine, forget() is safe to call with nothing saved.
+    nvs_erase_key(h, "ssid");
+    nvs_erase_key(h, "pass");
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void handleScanDone()
 {
     s_scan_pending = false;
@@ -202,6 +216,17 @@ void connect(const std::string &ssid, const std::string &password)
     saveCredentials(ssid, password);
 }
 
+void forget()
+{
+    ESP_LOGI(TAG, "Forgetting saved network");
+    eraseCredentials();
+    esp_wifi_disconnect();
+    s_ssid.clear();
+    s_ip.clear();
+    s_state = State::Disconnected;
+    notifyState();
+}
+
 State state()
 {
     return s_state;
@@ -210,6 +235,12 @@ State state()
 std::string currentSsid()
 {
     return s_ssid;
+}
+
+std::string savedSsid()
+{
+    std::string ssid, password;
+    return loadCredentials(ssid, password) ? ssid : std::string();
 }
 
 std::string ipAddress()

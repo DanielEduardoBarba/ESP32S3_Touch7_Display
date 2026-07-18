@@ -71,6 +71,38 @@ not the plain `USB` port next to it:
   docs, which say to manually press the RESET button after flashing when
   using it. Avoid it unless `UART1` isn't available.
 
+## Board variants: "7" vs "7B"
+
+Waveshare sells two hardware revisions of this board, and they need
+**different firmware** -- pick with `./build.sh`'s `--variant` flag (applies
+to `--build`/`--flash`/`--install`/`--run`/`--monitor`/`--menuconfig`/`--clean`):
+
+```bash
+./build.sh --install                  # default: --variant 7  (original board)
+./build.sh --install --variant 7b     # for a Waveshare ESP32-S3-Touch-LCD-7B
+```
+
+- **`7`** (default) -- the original board, 800x480. Officially supported by
+  ESP32_Display_Panel purely via Kconfig (ST7262 = generic RGB driver).
+- **`7b`** -- the newer revision, **1024x600**. Also a pure-RGB panel (same
+  data/sync GPIOs as the `7`) but with different timing (30MHz PCLK) and,
+  crucially, **no CH422G**: the 7B has Waveshare's custom "IO EXTENSION"
+  chip at I2C `0x24` instead, which the GT911 touch controller's reset line
+  runs through (without the reset dance, touch I2C never responds).
+  **Flashing the `7` firmware onto a 7B board boots fine but shows a black
+  screen** -- that's the tell that you have a 7B and need `--variant 7b`.
+  ESP32_Display_Panel has no official "7B" board entry (checked as of
+  2026-07), so this variant is a hand-written custom board config:
+  [firmware/common/esp_panel_board_custom_conf.7b.h](firmware/common/esp_panel_board_custom_conf.7b.h).
+  All values in it are taken verbatim from Waveshare's official demo repo
+  ([waveshareteam/ESP32-S3-Touch-LCD-7B](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-7B))
+  and verified working on real hardware (display + touch).
+
+Switching `--variant` on a stage that was already built for the other one
+auto-cleans its stale `build/`/`sdkconfig` first (tracked in a
+`.build_variant` marker file per stage), so you don't need to `--clean`
+manually when switching.
+
 ## Quick start (fresh Ubuntu machine)
 
 ```bash

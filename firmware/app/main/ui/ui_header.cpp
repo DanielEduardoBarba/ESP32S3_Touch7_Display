@@ -1,6 +1,6 @@
 #include "ui_header.h"
 
-#include "ui_home.h"
+#include "ui_scene_manager.h"
 #include "ui_wifi.h"
 
 namespace ui_header {
@@ -26,15 +26,24 @@ void hamburgerBtnClickedCb(lv_event_t *e)
     }
 }
 
-void homeMenuItemClickedCb(lv_event_t *e)
+void machineMenuItemClickedCb(lv_event_t *e)
 {
-    ui_home::showHome();
+    ui_scene_manager::show(ui_scene_manager::Scene::Machine);
+    hideHamburgerMenu();
+}
+
+void networkMenuItemClickedCb(lv_event_t *e)
+{
+    ui_scene_manager::show(ui_scene_manager::Scene::Network);
     hideHamburgerMenu();
 }
 
 void homeBtnClickedCb(lv_event_t *e)
 {
-    ui_home::showHome();
+    // The header's Home icon always jumps to the Machine scene, since that's
+    // now the app's default/primary view (Network is reached via the menu
+    // or the WiFi icon's own dropdown).
+    ui_scene_manager::show(ui_scene_manager::Scene::Machine);
 }
 
 void infoBtnClickedCb(lv_event_t *e)
@@ -70,10 +79,14 @@ void buildHamburgerMenu(lv_obj_t *screen)
     lv_obj_set_style_border_color(s_hamburger_menu, lv_color_hex(0x30363d), 0);
     lv_obj_set_style_border_width(s_hamburger_menu, 1, 0);
 
-    // Only one scene exists today (Home); more entries can be added here
-    // later without changing how the menu itself works.
-    lv_obj_t *home_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_HOME, "Home");
-    lv_obj_add_event_cb(home_item, homeMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
+    // Two scenes today: Machine (the default view) and Network (WiFi/device
+    // status). Add more lv_list_add_btn() entries here if more scenes are
+    // added later.
+    lv_obj_t *machine_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_SETTINGS, "Machine");
+    lv_obj_add_event_cb(machine_item, machineMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *network_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_WIFI, "Network");
+    lv_obj_add_event_cb(network_item, networkMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
 }
 
 } // namespace

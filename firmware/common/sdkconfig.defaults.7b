@@ -1,0 +1,20 @@
+# Board variant: Waveshare ESP32-S3-Touch-LCD-7B (the newer revision).
+# Select with `./build.sh --variant 7b ...`.
+#
+# The 7B uses a DIFFERENT LCD driver IC (ST7701, needs a 3-wire-SPI init
+# sequence) instead of the original 7's ST7262 (pure RGB, no init needed) --
+# that's why flashing the "7" firmware onto a 7B board boots fine (WiFi,
+# RS485, web server all work) but shows a black screen: the panel never
+# gets its ST7701 init commands.
+#
+# As of this writing, upstream ESP32_Display_Panel (both the version pinned
+# in this repo AND its latest `master`) has no official "7B" board entry, so
+# this variant is a CUSTOM board config (see ../README.md) instead of a
+# single Kconfig toggle like the "7" variant.
+#
+# Note: the actual "use custom board" switch lives as a plain #define
+# (ESP_PANEL_BOARD_DEFAULT_USE_CUSTOM) inside
+# esp_panel_board_custom_conf.7b.h itself, not here -- this Kconfig option
+# only controls whether that header file is consulted at all instead of
+# menuconfig-driven settings.
+CONFIG_ESP_PANEL_BOARD_FILE_SKIP=n

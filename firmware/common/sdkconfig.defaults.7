@@ -1,0 +1,10 @@
+# Board variant: Waveshare ESP32-S3-Touch-LCD-7 (the original, ST7262 LCD
+# driver). This is the default variant (`./build.sh --variant 7 ...`, or
+# just omit --variant).
+#
+# ESP32_Display_Panel officially supports this exact board out of the box
+# purely via Kconfig -- no custom pin configuration needed. This drives RGB
+# LCD timing, GT911 touch, and CH422G IO-expander wiring automatically.
+CONFIG_ESP_PANEL_BOARD_DEFAULT_USE_SUPPORTED=y
+CONFIG_ESP_PANEL_BOARD_MANUFACTURER_WAVESHARE=y
+CONFIG_BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_7=y

@@ -17,12 +17,23 @@ lv_obj_t *s_modal_bg = nullptr;
 lv_obj_t *s_ssid_ta = nullptr;
 lv_obj_t *s_pass_ta = nullptr;
 lv_obj_t *s_modal_status = nullptr;
+lv_obj_t *s_forget_btn = nullptr;
+
+bool isConnectedTo(const std::string &ssid)
+{
+    return wifi_manager::state() == wifi_manager::State::Connected && wifi_manager::currentSsid() == ssid;
+}
 
 void openModal(const std::string &ssid)
 {
     lv_textarea_set_text(s_ssid_ta, ssid.c_str());
     lv_textarea_set_text(s_pass_ta, "");
     lv_label_set_text(s_modal_status, "");
+    if (isConnectedTo(ssid)) {
+        lv_obj_clear_flag(s_forget_btn, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_forget_btn, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_clear_flag(s_modal_bg, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_dropdown, LV_OBJ_FLAG_HIDDEN);
 }
@@ -65,6 +76,13 @@ void onScanResults(const std::vector<wifi_manager::ApInfo> &results)
     for (const auto &ap : results) {
         std::string text = ap.ssid + (ap.secure ? "  " LV_SYMBOL_CLOSE : "");
         lv_obj_t *btn = lv_list_add_btn(s_list, LV_SYMBOL_WIFI, text.c_str());
+        if (isConnectedTo(ap.ssid)) {
+            // Highlight the currently-connected network so it's obvious at a
+            // glance which one is active, without needing to open the modal.
+            lv_obj_set_style_border_color(btn, lv_color_hex(0x2ea043), 0);
+            lv_obj_set_style_border_width(btn, 2, 0);
+            lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
+        }
         auto *ssid_copy = new std::string(ap.ssid);
         lv_obj_set_user_data(btn, ssid_copy);
         lv_obj_add_event_cb(btn, listItemClickedCb, LV_EVENT_CLICKED, ssid_copy);
@@ -100,6 +118,13 @@ void connectBtnClickedCb(lv_event_t *e)
     ui_keyboard::hide();
     lv_label_set_text(s_modal_status, "Connecting...");
     wifi_manager::connect(ssid, password);
+}
+
+void forgetBtnClickedCb(lv_event_t *e)
+{
+    wifi_manager::forget();
+    lv_label_set_text(s_modal_status, "Forgotten. Disconnected.");
+    lv_obj_add_flag(s_forget_btn, LV_OBJ_FLAG_HIDDEN);
 }
 
 void closeBtnClickedCb(lv_event_t *e)
@@ -207,6 +232,16 @@ void buildModal(lv_obj_t *screen)
     lv_obj_t *connect_label = lv_label_create(connect_btn);
     lv_label_set_text(connect_label, "Connect");
     lv_obj_center(connect_label);
+
+    s_forget_btn = lv_btn_create(card);
+    lv_obj_set_size(s_forget_btn, 140, 44);
+    lv_obj_set_style_bg_color(s_forget_btn, lv_color_hex(0xda3633), 0);
+    lv_obj_align_to(s_forget_btn, connect_btn, LV_ALIGN_OUT_LEFT_MID, -12, 0);
+    lv_obj_add_event_cb(s_forget_btn, forgetBtnClickedCb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_flag(s_forget_btn, LV_OBJ_FLAG_HIDDEN); // shown only for the connected network, see openModal()
+    lv_obj_t *forget_label = lv_label_create(s_forget_btn);
+    lv_label_set_text(forget_label, "Forget");
+    lv_obj_center(forget_label);
 
     s_modal_status = lv_label_create(card);
     lv_label_set_text(s_modal_status, "");

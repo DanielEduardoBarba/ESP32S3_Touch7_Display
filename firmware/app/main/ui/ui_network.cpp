@@ -1,9 +1,9 @@
-#include "ui_home.h"
+#include "ui_network.h"
 
 #include "lvgl_v8_port.h"
 #include "wifi_manager.h"
 
-namespace ui_home {
+namespace ui_network {
 namespace {
 
 lv_obj_t *s_content = nullptr;
@@ -33,7 +33,7 @@ void onWifiStateChange(wifi_manager::State state, const std::string &ssid, const
 
 } // namespace
 
-void build(lv_obj_t *screen, lv_coord_t header_height)
+lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
 {
     s_content = lv_obj_create(screen);
     lv_obj_set_size(s_content, LV_PCT(100), LV_VER_RES - header_height);
@@ -41,9 +41,10 @@ void build(lv_obj_t *screen, lv_coord_t header_height)
     lv_obj_set_style_bg_color(s_content, lv_color_hex(0x101317), 0);
     lv_obj_set_style_border_width(s_content, 0, 0);
     lv_obj_set_style_pad_all(s_content, 24, 0);
+    lv_obj_clear_flag(s_content, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(s_content);
-    lv_label_set_text(title, "Home");
+    lv_label_set_text(title, "Network");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -76,13 +77,8 @@ void build(lv_obj_t *screen, lv_coord_t header_height)
     lv_obj_align_to(hint, card, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
 
     wifi_manager::onStateChange(onWifiStateChange);
+
+    return s_content;
 }
 
-void showHome()
-{
-    if (s_content != nullptr) {
-        lv_obj_move_foreground(s_content);
-    }
-}
-
-} // namespace ui_home
+} // namespace ui_network

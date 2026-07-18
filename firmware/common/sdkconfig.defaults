@@ -52,12 +52,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE_115200=y
 
-# --- ESP32_Display_Panel: select the officially supported Waveshare board ---
-# (this drives RGB LCD timing, GT911 touch, and CH422G IO-expander wiring
-# automatically -- no custom pin configuration needed)
-CONFIG_ESP_PANEL_BOARD_DEFAULT_USE_SUPPORTED=y
-CONFIG_ESP_PANEL_BOARD_MANUFACTURER_WAVESHARE=y
-CONFIG_BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_7=y
+# --- ESP32_Display_Panel: board selection ---
+# The actual board-variant selection (Waveshare "7" vs "7B") lives in
+# sdkconfig.defaults.7 / sdkconfig.defaults.7b (see ../README.md and
+# build.sh's `--variant` flag) -- CMakeLists.txt layers one of those on top
+# of this shared file based on $ENV{TOUCH_ESP32_VARIANT}.
 
 # --- LVGL (v8.4, configured via Kconfig instead of a hand-written lv_conf.h) ---
 CONFIG_LV_COLOR_DEPTH_16=y

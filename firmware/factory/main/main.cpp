@@ -38,6 +38,28 @@ static const char *TAG = "factory";
 static Board *board = nullptr;
 static lv_obj_t *status_label = nullptr;
 
+// board->begin() drives the CH422G IO-expander over I2C, which toggles the
+// LCD backlight/reset lines and briefly spikes current draw. On a marginal
+// 5V supply (e.g. some USB-A host ports/hubs/cables that can't sustain the
+// draw), that spike can sag the rail enough to glitch the I2C write and
+// fail `begin()` -- retrying with a short settle delay recovers from a
+// one-off transient without masking a truly dead/miswired board (it still
+// asserts if every attempt fails).
+static bool begin_board_with_retries(Board *b, int max_attempts = 3)
+{
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        if (attempt > 1) {
+            ESP_LOGW(TAG, "board->begin() failed (attempt %d/%d), retrying after power-rail settle delay...",
+                      attempt - 1, max_attempts);
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+        if (b->begin()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void boot_into_app()
 {
     // Boot into the first OTA slot (`ota_0`) by default. On later boots the
@@ -137,7 +159,7 @@ extern "C" void app_main(void)
 
     board = new Board();
     board->init();
-    assert(board->begin());
+    assert(begin_board_with_retries(board));
 
     ESP_LOGI(TAG, "Initializing LVGL");
     lvgl_port_init(board->getLCD(), board->getTouch());
