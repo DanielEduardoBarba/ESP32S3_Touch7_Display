@@ -27,6 +27,16 @@ void rebootBtnClickedCb(lv_event_t *e)
     fw_update::rebootIntoUpdate();
 }
 
+/** "m:ss" (or "Ns" under a minute) into `out`. */
+void formatDuration(char *out, size_t len, uint32_t seconds)
+{
+    if (seconds >= 60) {
+        snprintf(out, len, "%lum %02lus", (unsigned long)(seconds / 60), (unsigned long)(seconds % 60));
+    } else {
+        snprintf(out, len, "%lus", (unsigned long)seconds);
+    }
+}
+
 /** fw_update status hook. Runs on the transfer/RX task, NOT the LVGL task,
  *  so it must take the LVGL lock before touching widgets. */
 void onUpdateStatus(const fw_update::Status &st)
@@ -38,15 +48,29 @@ void onUpdateStatus(const fw_update::Status &st)
         lv_bar_set_value(s_progress_bar, (int32_t)(100.0f * st.done_bytes / st.total_bytes), LV_ANIM_OFF);
     }
 
-    // Percent (1 decimal), bytes of total, and current speed estimate.
+    // Percent (1 decimal), bytes of total, speed, elapsed and remaining time.
     if (st.total_bytes > 0 &&
         (st.state == fw_update::State::Sending || st.state == fw_update::State::Receiving ||
          st.state == fw_update::State::SendDone || st.state == fw_update::State::ReceiveDone)) {
-        char detail[96];
-        snprintf(detail, sizeof(detail), "%.1f%%  --  %lu / %lu bytes  --  %.1f KB/s",
+        char elapsed[16] = "0s";
+        formatDuration(elapsed, sizeof(elapsed), st.elapsed_ms / 1000);
+
+        char remaining[16] = "--";
+        const bool running =
+            st.state == fw_update::State::Sending || st.state == fw_update::State::Receiving;
+        if (running && st.bytes_per_sec > 0 && st.total_bytes > st.done_bytes) {
+            formatDuration(remaining, sizeof(remaining),
+                           (st.total_bytes - st.done_bytes) / st.bytes_per_sec);
+        } else if (!running) {
+            snprintf(remaining, sizeof(remaining), "done");
+        }
+
+        char detail[160];
+        snprintf(detail, sizeof(detail),
+                 "%.1f%%  --  %lu / %lu bytes  --  %.1f KB/s\nElapsed: %s   Remaining: ~%s",
                  100.0f * st.done_bytes / st.total_bytes,
                  (unsigned long)st.done_bytes, (unsigned long)st.total_bytes,
-                 st.bytes_per_sec / 1024.0f);
+                 st.bytes_per_sec / 1024.0f, elapsed, remaining);
         lv_label_set_text(s_detail_label, detail);
     } else {
         lv_label_set_text(s_detail_label, "");
@@ -146,11 +170,12 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
     lv_obj_align_to(s_progress_bar, s_reboot_btn, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 18);
     lv_bar_set_range(s_progress_bar, 0, 100);
 
-    // Percent / bytes / speed line, updated live during transfers.
+    // Percent / bytes / speed / time line, updated live during transfers.
     s_detail_label = lv_label_create(s_content);
     lv_label_set_text(s_detail_label, "");
     lv_obj_set_style_text_color(s_detail_label, lv_color_hex(0x9aa4b2), 0);
     lv_obj_set_width(s_detail_label, 480);
+    lv_label_set_long_mode(s_detail_label, LV_LABEL_LONG_WRAP);
     lv_obj_align_to(s_detail_label, s_progress_bar, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
 
     s_status_label = lv_label_create(s_content);

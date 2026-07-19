@@ -35,6 +35,7 @@ export interface UpdateInfoResponse {
   transfer_total: number
   transfer_done: number
   transfer_bps: number
+  transfer_elapsed_ms: number
   transfer_message: string
 }
 

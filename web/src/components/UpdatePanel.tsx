@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api, type UpdateInfoResponse } from '../lib/api'
 
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`
+}
+
 /**
  * Mirrors the device's "Update" scene: shows which OTA slot this device is
  * running (version, size, state), lets you pipe the running firmware to the
@@ -107,6 +112,13 @@ export function UpdatePanel() {
             {percent.toFixed(1)}% &nbsp;·&nbsp; {info.transfer_done.toLocaleString()} /{' '}
             {info.transfer_total.toLocaleString()} bytes &nbsp;·&nbsp;{' '}
             {(info.transfer_bps / 1024).toFixed(1)} KB/s
+            <br />
+            Elapsed: {formatDuration(info.transfer_elapsed_ms / 1000)} &nbsp;·&nbsp; Remaining:{' '}
+            {busy && info.transfer_bps > 0 && info.transfer_total > info.transfer_done
+              ? `~${formatDuration((info.transfer_total - info.transfer_done) / info.transfer_bps)}`
+              : busy
+                ? '…'
+                : 'done'}
           </p>
         )}
 

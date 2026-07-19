@@ -57,9 +57,11 @@ void setStatus(State state, uint32_t total, uint32_t done, const std::string &me
     if (transferring && done == 0) {
         s_xfer_start_us = now_us;
         s_status.bytes_per_sec = 0;
+        s_status.elapsed_ms = 0;
     } else if (transferring && now_us > s_xfer_start_us && s_xfer_start_us > 0) {
         s_status.bytes_per_sec =
             (uint32_t)(((uint64_t)done * 1000000ULL) / (uint64_t)(now_us - s_xfer_start_us));
+        s_status.elapsed_ms = (uint32_t)((now_us - s_xfer_start_us) / 1000);
     }
 
     s_status.state = state;

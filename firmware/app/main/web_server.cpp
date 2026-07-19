@@ -289,6 +289,7 @@ esp_err_t apiUpdateInfoHandler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "transfer_total", st.total_bytes);
     cJSON_AddNumberToObject(root, "transfer_done", st.done_bytes);
     cJSON_AddNumberToObject(root, "transfer_bps", st.bytes_per_sec);
+    cJSON_AddNumberToObject(root, "transfer_elapsed_ms", st.elapsed_ms);
     cJSON_AddStringToObject(root, "transfer_message", st.message.c_str());
 
     char *json = cJSON_PrintUnformatted(root);
