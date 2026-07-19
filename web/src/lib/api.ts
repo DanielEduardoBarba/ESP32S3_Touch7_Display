@@ -34,6 +34,7 @@ export interface UpdateInfoResponse {
   transfer_state: 'idle' | 'sending' | 'receiving' | 'send_done' | 'receive_done' | 'failed'
   transfer_total: number
   transfer_done: number
+  transfer_bps: number
   transfer_message: string
 }
 

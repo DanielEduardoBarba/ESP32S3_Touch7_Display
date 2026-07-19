@@ -10,4 +10,4 @@
 
 // Bump this whenever the app's user-facing behavior changes. Shown in the
 // header (next to the Home button) and available to the web GUI/logs.
-#define APP_VERSION "0.0.1"
+#define APP_VERSION "0.0.3"

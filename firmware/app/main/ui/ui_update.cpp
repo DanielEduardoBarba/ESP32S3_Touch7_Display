@@ -8,6 +8,7 @@ namespace {
 
 lv_obj_t *s_content = nullptr;
 lv_obj_t *s_status_label = nullptr;
+lv_obj_t *s_detail_label = nullptr;
 lv_obj_t *s_progress_bar = nullptr;
 lv_obj_t *s_update_btn = nullptr;
 lv_obj_t *s_reboot_btn = nullptr;
@@ -35,6 +36,20 @@ void onUpdateStatus(const fw_update::Status &st)
     lv_label_set_text(s_status_label, st.message.c_str());
     if (st.total_bytes > 0) {
         lv_bar_set_value(s_progress_bar, (int32_t)(100.0f * st.done_bytes / st.total_bytes), LV_ANIM_OFF);
+    }
+
+    // Percent (1 decimal), bytes of total, and current speed estimate.
+    if (st.total_bytes > 0 &&
+        (st.state == fw_update::State::Sending || st.state == fw_update::State::Receiving ||
+         st.state == fw_update::State::SendDone || st.state == fw_update::State::ReceiveDone)) {
+        char detail[96];
+        snprintf(detail, sizeof(detail), "%.1f%%  --  %lu / %lu bytes  --  %.1f KB/s",
+                 100.0f * st.done_bytes / st.total_bytes,
+                 (unsigned long)st.done_bytes, (unsigned long)st.total_bytes,
+                 st.bytes_per_sec / 1024.0f);
+        lv_label_set_text(s_detail_label, detail);
+    } else {
+        lv_label_set_text(s_detail_label, "");
     }
 
     switch (st.state) {
@@ -131,12 +146,19 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
     lv_obj_align_to(s_progress_bar, s_reboot_btn, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 18);
     lv_bar_set_range(s_progress_bar, 0, 100);
 
+    // Percent / bytes / speed line, updated live during transfers.
+    s_detail_label = lv_label_create(s_content);
+    lv_label_set_text(s_detail_label, "");
+    lv_obj_set_style_text_color(s_detail_label, lv_color_hex(0x9aa4b2), 0);
+    lv_obj_set_width(s_detail_label, 480);
+    lv_obj_align_to(s_detail_label, s_progress_bar, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
     s_status_label = lv_label_create(s_content);
     lv_label_set_text(s_status_label, "Idle");
     lv_obj_set_style_text_color(s_status_label, lv_color_hex(0xf0a500), 0);
     lv_obj_set_width(s_status_label, 480);
     lv_label_set_long_mode(s_status_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align_to(s_status_label, s_progress_bar, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+    lv_obj_align_to(s_status_label, s_detail_label, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
 
     fw_update::onStatusChange(onUpdateStatus);
     return s_content;

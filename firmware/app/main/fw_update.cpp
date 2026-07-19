@@ -7,6 +7,7 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -30,6 +31,7 @@ constexpr TickType_t ACK_TIMEOUT = pdMS_TO_TICKS(3000);
 
 Status s_status;
 std::vector<StatusCallback> s_status_cbs;
+int64_t s_xfer_start_us = 0;   // for the average-speed estimate
 
 // Stop-and-wait handshake: the sender task blocks here until the RX path
 // (comm_protocol callback) signals that the peer acknowledged.
@@ -48,12 +50,26 @@ uint32_t s_rx_received = 0;
 
 void setStatus(State state, uint32_t total, uint32_t done, const std::string &message)
 {
+    // Speed estimate: average bytes/sec since the transfer started. Reset
+    // the clock whenever a transfer (re)starts at offset 0.
+    const int64_t now_us = esp_timer_get_time();
+    const bool transferring = (state == State::Sending || state == State::Receiving);
+    if (transferring && done == 0) {
+        s_xfer_start_us = now_us;
+        s_status.bytes_per_sec = 0;
+    } else if (transferring && now_us > s_xfer_start_us && s_xfer_start_us > 0) {
+        s_status.bytes_per_sec =
+            (uint32_t)(((uint64_t)done * 1000000ULL) / (uint64_t)(now_us - s_xfer_start_us));
+    }
+
     s_status.state = state;
     s_status.total_bytes = total;
     s_status.done_bytes = done;
     s_status.message = message;
-    ESP_LOGI(TAG, "[%d] %s (%lu/%lu)", (int)state, message.c_str(),
-             (unsigned long)done, (unsigned long)total);
+    ESP_LOGI(TAG, "[%d] %s (%lu/%lu, %.1f%%, %lu B/s)", (int)state, message.c_str(),
+             (unsigned long)done, (unsigned long)total,
+             total > 0 ? 100.0 * done / total : 0.0,
+             (unsigned long)s_status.bytes_per_sec);
     for (const auto &cb : s_status_cbs) {
         cb(s_status);
     }

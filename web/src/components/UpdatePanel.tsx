@@ -38,8 +38,9 @@ export function UpdatePanel() {
   const busy = info.transfer_state === 'sending' || info.transfer_state === 'receiving'
   const received = info.transfer_state === 'receive_done'
   const failed = info.transfer_state === 'failed'
-  const progress =
-    info.transfer_total > 0 ? Math.round((100 * info.transfer_done) / info.transfer_total) : 0
+  const percent =
+    info.transfer_total > 0 ? (100 * info.transfer_done) / info.transfer_total : 0
+  const showDetail = info.transfer_total > 0 && info.transfer_state !== 'idle' && !failed
 
   const send = async () => {
     setError(null)
@@ -96,9 +97,17 @@ export function UpdatePanel() {
           <div className="h-2 w-full overflow-hidden rounded bg-white/10">
             <div
               className="h-full rounded bg-emerald-500 transition-all"
-              style={{ width: `${progress}%` }}
+              style={{ width: `${percent}%` }}
             />
           </div>
+        )}
+
+        {showDetail && (
+          <p className="font-mono text-sm text-gray-300">
+            {percent.toFixed(1)}% &nbsp;·&nbsp; {info.transfer_done.toLocaleString()} /{' '}
+            {info.transfer_total.toLocaleString()} bytes &nbsp;·&nbsp;{' '}
+            {(info.transfer_bps / 1024).toFixed(1)} KB/s
+          </p>
         )}
 
         <p

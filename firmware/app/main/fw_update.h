@@ -42,6 +42,7 @@ struct Status {
     State state = State::Idle;
     uint32_t total_bytes = 0;
     uint32_t done_bytes = 0;
+    uint32_t bytes_per_sec = 0;   // average transfer speed (0 until measurable)
     std::string message;   // human text for GUIs/logs ("CRC OK", errors, ...)
 };
 
