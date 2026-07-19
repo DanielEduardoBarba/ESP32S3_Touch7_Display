@@ -10,32 +10,69 @@
 #   ./build.sh --build [stage]      Build firmware. stage: factory|app|all
 #                                    (default: all).
 #   ./build.sh --flash [stage]      Flash already-built firmware to a
-#                                    connected board. stage: factory|app|all
-#                                    (default: all).
+#                                    connected board. stage (default: all):
+#                                      factory  bootloader + partition table
+#                                               + otadata + recovery app
+#                                               (0x0..0x10000 region + factory)
+#                                      app      main app -> ota_0 (0x110000)
+#                                               + web UI -> webapp (0x710000).
+#                                               Bootloader/recovery untouched.
+#                                      all      factory, then app (no erase;
+#                                               NVS/settings survive).
+#                                      full     ERASES THE ENTIRE CHIP first
+#                                               (wipes NVS/WiFi credentials,
+#                                               otadata, ota_1, webapp), then
+#                                               flashes factory + app. Use for
+#                                               a truly pristine board state.
 #   ./build.sh --install [stage]    web + build + flash in one go (default:
-#                                    all). This is what you want for a brand
-#                                    new board.
+#                                    all; also accepts full). This is what
+#                                    you want for a brand new board.
 #   ./build.sh --run [stage]        Connect and watch live serial output from
 #                                    EVERY connected board at once (stage:
 #                                    factory|app, default: app) -- does NOT
 #                                    build or flash on startup. Each device's
 #                                    log lines are tagged/colored so you can
 #                                    tell multiple boards apart. While
-#                                    watching: press '0' to target ALL
-#                                    devices (default), '1'-'9' to target
-#                                    just that device number, 'b' to build
-#                                    only (compile check), 'r' to rebuild +
-#                                    reflash + resume the TARGETED device(s)
-#                                    (Expo-Go style manual reload), 'h' for a
-#                                    help menu (which /dev/ttyACM... is which
-#                                    device number, plus this key reference),
-#                                    Ctrl+C to quit.
+#                                    watching: '0' targets ALL devices
+#                                    (default), '1'-'9' targets one device,
+#                                    'r' rebuilds+reflashes the default stage
+#                                    to the targeted device(s), 'f' the
+#                                    factory/recovery stage, 'a' all stages
+#                                    (factory+app), 'b' compile-check only,
+#                                    'w' rebuilds the web UI only, 'h' shows
+#                                    a help menu (device numbering + keys),
+#                                    Ctrl+C quits.
 #   ./build.sh --monitor [stage]    Same as --run (identical behavior; kept
 #                                    as a separate name for clarity).
 #   ./build.sh --menuconfig <stage> Open idf.py menuconfig for one stage.
 #   ./build.sh --clean [stage]      Remove build/ dirs.
+#   ./build.sh --mem-map            Print the full flash memory map (fixed
+#                                    bootloader/partition-table regions +
+#                                    all partitions + unmapped gaps) --
+#                                    offline, no board needed.
+#   ./build.sh --mem [addr|name]    Interactively browse a connected board's
+#                                    ACTUAL flash contents in `hexdump -C`
+#                                    format, starting at a hex address or a
+#                                    partition name (default 0x0). Shows
+#                                    which region you're in plus what lies
+#                                    above/below; scroll with j/k/u/d, jump
+#                                    with 'g' (address or partition name),
+#                                    hop region boundaries with n/p, 'm' for
+#                                    the map, 'q' to quit. Reads go over the
+#                                    serial bootloader in cached 64KB
+#                                    windows (each uncached read briefly
+#                                    resets the board). Examples:
+#                                      ./build.sh --mem ota_0
+#                                      ./build.sh --mem 0x110000
 #   ./build.sh --port /dev/ttyXXX   Override auto-detected serial port for
 #                                    any of the above (can appear anywhere).
+#   ./build.sh --usbdevs            Also consider /dev/ttyUSB* devices during
+#                                    port auto-detection. By default ONLY
+#                                    /dev/ttyACM* is scanned (this project's
+#                                    boards), so an unrelated ttyUSB board or
+#                                    dongle can never be flashed by accident.
+#                                    (--port /dev/ttyUSBx also works without
+#                                    this flag -- explicit choice always wins.)
 #   ./build.sh --variant 7|7b       Select board hardware revision (default:
 #                                    7). Waveshare ESP32-S3-Touch-LCD-7 (the
 #                                    original, ST7262 LCD driver) vs -7B (the
@@ -85,6 +122,10 @@ FLASH_BAUD="${FLASH_BAUD:-921600}"
 NODE_MIN_MAJOR=18
 
 PORT_OVERRIDE=""
+# Include /dev/ttyUSB* devices in port auto-detection (0 = ttyACM only).
+# Off by default so an unrelated ttyUSB board/dongle can never be flashed
+# by accident; enable with --usbdevs, or target one directly with --port.
+USB_DEVS=0
 # Board variant: "7" (original, Kconfig-supported) or "7b" (newer revision,
 # custom board config -- see firmware/README.md "Board variants"). Applies
 # to --build/--flash/--install/--run/--monitor/--menuconfig/--clean.
@@ -101,7 +142,7 @@ warn() { echo -e "${c_bold}${c_yellow}==>${c_reset} $*"; }
 err()  { echo -e "${c_bold}${c_red}==>${c_reset} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-usage() { sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,107p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # --------------------------------------------------------------------------
 # Setup (fresh machine bootstrap)
@@ -236,11 +277,19 @@ find_esp32_port() {
 
     local candidates=()
     shopt -s nullglob
-    candidates+=(/dev/ttyUSB* /dev/ttyACM*)
+    # Only /dev/ttyACM* by default: this project's boards enumerate via
+    # their CH343 bridge as ttyACM. ttyUSB* devices are usually UNRELATED
+    # boards/dongles (e.g. a classic ESP32), and flashing one by accident
+    # is destructive -- so they are never auto-selected unless the user
+    # explicitly opts in with --usbdevs. (--port always works for any path.)
+    candidates+=(/dev/ttyACM*)
+    if [[ $USB_DEVS -eq 1 ]]; then
+        candidates+=(/dev/ttyUSB*)
+    fi
     shopt -u nullglob
 
     if [[ ${#candidates[@]} -eq 0 ]]; then
-        die "No /dev/ttyUSB* or /dev/ttyACM* device found. Plug in the board (USB port labeled UART), and make sure your user is in the 'dialout' group (./build.sh --setup)."
+        die "No /dev/ttyACM* device found. Plug in the board (USB port labeled UART), and make sure your user is in the 'dialout' group (./build.sh --setup). To target a /dev/ttyUSB* device instead, pass --usbdevs or --port /dev/ttyUSBx."
     elif [[ ${#candidates[@]} -eq 1 ]]; then
         echo "${candidates[0]}"
     else
@@ -261,7 +310,10 @@ find_all_esp32_ports() {
 
     local candidates=()
     shopt -s nullglob
-    candidates+=(/dev/ttyUSB* /dev/ttyACM*)
+    candidates+=(/dev/ttyACM*)
+    if [[ $USB_DEVS -eq 1 ]]; then
+        candidates+=(/dev/ttyUSB*)
+    fi
     shopt -u nullglob
 
     if [[ ${#candidates[@]} -eq 0 ]]; then
@@ -368,7 +420,18 @@ cmd_flash() {
         factory) flash_factory "$port" ;;
         app)     flash_app "$port" ;;
         all)     flash_factory "$port"; flash_app "$port" ;;
-        *) die "Unknown stage '$stage' (expected factory|app|all)" ;;
+        full)
+            # Full factory-fresh reflash: wipe every byte of flash first --
+            # including NVS (WiFi credentials/settings), otadata (boot slot +
+            # rollback state), the ota_1 backup slot, and the webapp
+            # partition -- then write factory + app back. The result is
+            # indistinguishable from a brand-new board running this firmware.
+            warn "FULL flash: erasing the ENTIRE chip (all settings/WiFi credentials will be lost)..."
+            esptool.py --chip "$IDF_TARGET" -p "$port" -b "$FLASH_BAUD" erase_flash
+            flash_factory "$port"
+            flash_app "$port"
+            ;;
+        *) die "Unknown stage '$stage' (expected factory|app|all|full)" ;;
     esac
 
     log "Flash complete. Reset the board (or power-cycle) to boot into the new firmware."
@@ -376,14 +439,20 @@ cmd_flash() {
 
 cmd_install() {
     local stage="${1:-all}"
-    if [[ "$stage" == "all" || "$stage" == "app" ]]; then
+    if [[ "$stage" == "all" || "$stage" == "app" || "$stage" == "full" ]]; then
         if [[ ! -f "$WEB_DIR/dist/index.html" ]]; then
             cmd_web
         else
             log "web/dist already built (skipping; run './build.sh --web' to rebuild it)."
         fi
     fi
-    cmd_build "$stage"
+    # 'full' only affects how much is ERASED at flash time -- the build
+    # artifacts themselves are identical to 'all'.
+    local build_stage="$stage"
+    if [[ "$build_stage" == "full" ]]; then
+        build_stage="all"
+    fi
+    cmd_build "$build_stage"
     cmd_flash "$stage"
 }
 
@@ -414,8 +483,9 @@ cmd_monitor() {
 
 # Just connects and watches live serial output from every connected board --
 # no build or flash on startup. Use the monitor's own keys to do that on
-# demand: '0'/'1'-'9' pick which device(s) are targeted, 'b' builds, 'r'
-# rebuilds + reflashes the targeted device(s) + resumes, 'h' shows a full
+# demand: '0'/'1'-'9' pick which device(s) are targeted, 'r' rebuilds +
+# reflashes the default stage, 'f' the factory/recovery stage, 'a' all
+# stages, 'b' compile-checks, 'w' rebuilds the web UI, 'h' shows a full
 # reference (including which /dev/ttyACM... is which device number). This is
 # the typical "leave it running and iterate" loop: start it once, then
 # press 'r' whenever you want to try new code on one or all boards, instead
@@ -473,6 +543,44 @@ ensure_variant_consistency() {
 }
 
 # --------------------------------------------------------------------------
+# Flash memory inspection
+# --------------------------------------------------------------------------
+# Prints the full flash layout (fixed bootloader/partition-table regions +
+# every partitions.csv row + any unmapped gaps) without touching a board.
+cmd_mem_map() {
+    python3 - "$PARTITIONS_CSV" "$SCRIPT_DIR/tools" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[2])
+from flash_inspector import load_regions, CHIP_SIZE
+
+regions = load_regions(sys.argv[1])
+print(f"{'name':<18} {'start':>10} {'end':>10} {'size':>10}")
+prev_end = 0
+for r in regions:
+    if r["offset"] > prev_end:
+        print(f"{'(unmapped)':<18} {prev_end:>#10x} {r['offset']:>#10x} {r['offset'] - prev_end:>#10x}")
+    end = r["offset"] + r["size"]
+    print(f"{r['name']:<18} {r['offset']:>#10x} {end:>#10x} {r['size']:>#10x}")
+    prev_end = end
+if prev_end < CHIP_SIZE:
+    print(f"{'(unmapped)':<18} {prev_end:>#10x} {CHIP_SIZE:>#10x} {CHIP_SIZE - prev_end:>#10x}")
+PYEOF
+}
+
+# Interactive hexdump-style browser over the chip's actual flash contents
+# (reads over the serial bootloader; see tools/flash_inspector.py).
+cmd_mem() {
+    local start="${1:-0x0}"
+    ensure_idf_env
+    local port; port="$(find_esp32_port)"
+    warn "Each uncached read resets the board briefly (download mode -> read -> hard reset)."
+    warn "Quit any running monitor first -- the inspector needs exclusive port access."
+    python3 "$SCRIPT_DIR/tools/flash_inspector.py" \
+        --port "$port" --baud "$FLASH_BAUD" \
+        --partitions-csv "$PARTITIONS_CSV" --start "$start"
+}
+
+# --------------------------------------------------------------------------
 # Argument parsing
 # --------------------------------------------------------------------------
 ACTION=""
@@ -486,6 +594,8 @@ while [[ $i -lt ${#args[@]} ]]; do
     if [[ "${args[$i]}" == "--port" ]]; then
         i=$((i+1))
         PORT_OVERRIDE="${args[$i]:-}"
+    elif [[ "${args[$i]}" == "--usbdevs" ]]; then
+        USB_DEVS=1
     elif [[ "${args[$i]}" == "--variant" ]]; then
         i=$((i+1))
         VARIANT="${args[$i]:-}"
@@ -526,6 +636,8 @@ while [[ $# -gt 0 ]]; do
         --monitor) ACTION="monitor"; shift; consume_stage_arg "" "${1:-}"; if [[ $shift_extra -eq 1 ]]; then shift; fi ;;
         --menuconfig) ACTION="menuconfig"; shift; consume_stage_arg "" "${1:-}"; if [[ $shift_extra -eq 1 ]]; then shift; fi ;;
         --clean) ACTION="clean"; shift; consume_stage_arg "all" "${1:-}"; if [[ $shift_extra -eq 1 ]]; then shift; fi ;;
+        --mem) ACTION="mem"; shift; consume_stage_arg "0x0" "${1:-}"; if [[ $shift_extra -eq 1 ]]; then shift; fi ;;
+        --mem-map) ACTION="mem_map"; shift ;;
         --help|-h) usage; exit 0 ;;
         "") shift ;;
         *) die "Unknown argument: $1 (see --help)" ;;
@@ -542,6 +654,8 @@ case "$ACTION" in
     monitor) ensure_dialout_group; cmd_monitor "$STAGE_ARG" ;;
     menuconfig) cmd_menuconfig "$STAGE_ARG" ;;
     clean) cmd_clean "$STAGE_ARG" ;;
+    mem) ensure_dialout_group; cmd_mem "$STAGE_ARG" ;;
+    mem_map) cmd_mem_map ;;
     "") usage; exit 1 ;;
 esac
 

@@ -22,12 +22,15 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 
+#include "boot_health.h"
+#include "comm_protocol.h"
+#include "fw_update.h"
 #include "lvgl_v8_port.h"
 #include "machine_state.h"
-#include "rs485.h"
-#include "rs485_protocol.h"
+#include "ports.h"
 #include "storage.h"
 #include "ui/ui.h"
+#include "user_store.h"
 #include "web_server.h"
 #include "wifi_manager.h"
 
@@ -59,6 +62,11 @@ static bool begin_board_with_retries(Board *b, int max_attempts = 3)
 
 extern "C" void app_main(void)
 {
+    // Recovery escape hatch: if the BOOT button is held while the app
+    // starts, reboot into the factory/recovery app instead. Must run before
+    // board init because GPIO0 becomes an LCD data line afterwards.
+    boot_health::checkRecoveryButtonAtBoot();
+
     ESP_LOGI(TAG, "Initializing board");
     Board *board = new Board();
     board->init();
@@ -66,6 +74,9 @@ extern "C" void app_main(void)
 
     ESP_LOGI(TAG, "Initializing LVGL");
     lvgl_port_init(board->getLCD(), board->getTouch());
+
+    ESP_LOGI(TAG, "Initializing user data store");
+    user_store::init();
 
     ESP_LOGI(TAG, "Building UI");
     lvgl_port_lock(-1);
@@ -79,13 +90,20 @@ extern "C" void app_main(void)
     wifi_manager::init();
     wifi_manager::autoConnect();
 
-    ESP_LOGI(TAG, "Starting RS485");
-    rs485::init();
-    rs485_protocol::init();
-    machine_state::init();
+    ESP_LOGI(TAG, "Starting peer link (ports + framing + machine sync + fw update)");
+    ports::init();          // transports (RS485 default; see ports_config.h)
+    comm_protocol::init();  // STX/ETX framing + hex logging on top of ports
+    machine_state::init();  // dial/toggle sync over the framing
+    fw_update::init();      // device-to-device OTA over the framing
 
     ESP_LOGI(TAG, "Starting web server");
     web_server::start();
+
+    // Every critical subsystem is up -- that's the OTA self-test. If this
+    // image was just installed over-the-air (pending verify), lock it in;
+    // had we crashed anywhere above, the stock bootloader would have rolled
+    // back to the previous working image on the next reset instead.
+    boot_health::commitRunningImageIfPending();
 
     ESP_LOGI(TAG, "Setup complete, entering idle loop");
     while (true) {

@@ -59,7 +59,10 @@ void init()
     ESP_ERROR_CHECK(uart_param_config(RS485_UART, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(RS485_UART, RS485_TX_GPIO, RS485_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    xTaskCreatePinnedToCore(rxTask, "rs485_rx", 3072, nullptr, 5, nullptr, tskNO_AFFINITY);
+    // 6KB stack: the RX callback chain now includes comm_protocol parsing
+    // and fw_update's esp_ota_write() (device-to-device updates), which
+    // need more headroom than plain byte forwarding did.
+    xTaskCreatePinnedToCore(rxTask, "rs485_rx", 6144, nullptr, 5, nullptr, tskNO_AFFINITY);
 
     ESP_LOGI(TAG, "RS485 initialized on UART%d @ %d baud", (int)RS485_UART, RS485_BAUD_RATE);
 }

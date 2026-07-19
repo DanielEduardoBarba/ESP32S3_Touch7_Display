@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { Header } from './components/Header'
 import { MachinePanel } from './components/MachinePanel'
 import { NetworkPanel } from './components/NetworkPanel'
+import { PortsPanel } from './components/PortsPanel'
+import { UpdatePanel } from './components/UpdatePanel'
 import { api, type StatusResponse } from './lib/api'
 
-// Mirrors the two scenes on the device's own touchscreen (see
+// Mirrors the scenes on the device's own touchscreen (see
 // firmware/app/main/ui/ui_scene_manager.h): "Machine" is the default view.
-type Scene = 'machine' | 'network'
+type Scene = 'machine' | 'network' | 'ports' | 'update'
 
 function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null)
@@ -36,7 +38,7 @@ function App() {
       <Header status={status} />
 
       <nav className="mx-auto flex w-full max-w-4xl gap-2 px-6 pt-4">
-        {(['machine', 'network'] as const).map((s) => (
+        {(['machine', 'network', 'ports', 'update'] as const).map((s) => (
           <button
             key={s}
             onClick={() => setScene(s)}
@@ -50,7 +52,10 @@ function App() {
       </nav>
 
       <main className="mx-auto w-full max-w-4xl flex-1 p-6">
-        {scene === 'machine' ? <MachinePanel /> : <NetworkPanel status={status} />}
+        {scene === 'machine' && <MachinePanel />}
+        {scene === 'network' && <NetworkPanel status={status} />}
+        {scene === 'ports' && <PortsPanel />}
+        {scene === 'update' && <UpdatePanel />}
       </main>
 
       <footer className="px-6 pb-4 text-center text-xs text-gray-600">

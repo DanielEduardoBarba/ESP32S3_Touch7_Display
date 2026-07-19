@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "esp_log.h"
-#include "rs485_protocol.h"
+#include "comm_protocol.h"
 
 namespace machine_state {
 namespace {
@@ -16,6 +16,13 @@ ApplyDialCallback s_apply_dial;
 ApplyToggleCallback s_apply_toggle;
 std::vector<StateChangeCallback> s_state_change_cbs;
 
+/** Packs all on/off devices into the compact status bitfield (bit 0 =
+ *  the sample toggle; future toggles get bits 1..7). */
+uint8_t toggleBitfield()
+{
+    return s_state.toggle_state ? 0x01 : 0x00;
+}
+
 void notifyStateChange()
 {
     for (const auto &cb : s_state_change_cbs) {
@@ -23,13 +30,13 @@ void notifyStateChange()
     }
 }
 
-/** RS485 frame arrived from the other board: move the local widgets to
- *  match, but do NOT call rs485_protocol::sendDial() here -- doing so would
- *  immediately bounce the value back to the sender, which would bounce it
- *  back again, forever. Only *local* actions (touchscreen or web) transmit. */
+/** A frame arrived from the other board: move the local widgets to match,
+ *  but do NOT transmit here -- doing so would immediately bounce the value
+ *  back to the sender, forever. Only *local* actions (touchscreen or web)
+ *  transmit. */
 void handleRemoteDial(uint8_t value)
 {
-    ESP_LOGI(TAG, "RS485: dial set to %d", value);
+    ESP_LOGI(TAG, "peer: dial set to %d", value);
     s_state.dial_value = value;
     if (s_apply_dial) {
         s_apply_dial(value);
@@ -37,12 +44,10 @@ void handleRemoteDial(uint8_t value)
     notifyStateChange();
 }
 
-void handleRemoteToggle(uint8_t toggle_id, bool state)
+void handleRemoteToggles(uint8_t bitfield)
 {
-    if (toggle_id != TOGGLE_ID_SAMPLE) {
-        return; // not a toggle we know about (future-proofing for more toggles)
-    }
-    ESP_LOGI(TAG, "RS485: toggle %d set to %d", toggle_id, state);
+    bool state = (bitfield & 0x01) != 0;
+    ESP_LOGI(TAG, "peer: toggle bitfield 0x%02x (sample=%d)", bitfield, state);
     s_state.toggle_state = state;
     if (s_apply_toggle) {
         s_apply_toggle(state);
@@ -54,8 +59,8 @@ void handleRemoteToggle(uint8_t toggle_id, bool state)
 
 void init()
 {
-    rs485_protocol::onDialReceived(handleRemoteDial);
-    rs485_protocol::onToggleReceived(handleRemoteToggle);
+    comm_protocol::onDialReceived(handleRemoteDial);
+    comm_protocol::onTogglesReceived(handleRemoteToggles);
 }
 
 void setUiCallbacks(ApplyDialCallback apply_dial, ApplyToggleCallback apply_toggle)
@@ -73,16 +78,16 @@ void setDialFromLocalUi(uint8_t value)
 {
     // The touchscreen widget already shows this value (the user just
     // dragged it there), so there's no need to call s_apply_dial here --
-    // only the *other* outputs (RS485 + web) need to be told about it.
+    // only the *other* outputs (peer link + web) need to be told about it.
     s_state.dial_value = value;
-    rs485_protocol::sendDial(value);
+    comm_protocol::sendDial(value);
     notifyStateChange();
 }
 
 void setToggleFromLocalUi(bool state)
 {
     s_state.toggle_state = state;
-    rs485_protocol::sendToggle(TOGGLE_ID_SAMPLE, state);
+    comm_protocol::sendToggles(toggleBitfield());
     notifyStateChange();
 }
 
@@ -96,7 +101,7 @@ void setDialFromWeb(uint8_t value)
     if (s_apply_dial) {
         s_apply_dial(value);
     }
-    rs485_protocol::sendDial(value);
+    comm_protocol::sendDial(value);
     notifyStateChange();
 }
 
@@ -106,7 +111,7 @@ void setToggleFromWeb(bool state)
     if (s_apply_toggle) {
         s_apply_toggle(state);
     }
-    rs485_protocol::sendToggle(TOGGLE_ID_SAMPLE, state);
+    comm_protocol::sendToggles(toggleBitfield());
     notifyStateChange();
 }
 

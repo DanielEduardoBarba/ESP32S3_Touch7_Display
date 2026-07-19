@@ -34,6 +34,16 @@ CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"
 
+# --- OTA rollback (high-reliability boot flow) ---
+# With this enabled, an image installed via esp_ota_set_boot_partition()
+# boots in "pending verify" state. It must prove itself healthy by calling
+# esp_ota_mark_app_valid_cancel_rollback() (see firmware/app/main/boot_health.cpp)
+# -- if it crashes or resets before doing so, the STOCK 2nd-stage bootloader
+# automatically rolls back to the previous working image (or falls back to
+# the factory/recovery app if no valid OTA slot remains). All of this is
+# built into ESP-IDF; no custom boot-manager layer is involved.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # --- USB / console ---
 # This board has TWO USB-C ports: one wired to the ESP32-S3's *native*
 # USB-Serial/JTAG peripheral, and one ("UART1" on the silkscreen) wired

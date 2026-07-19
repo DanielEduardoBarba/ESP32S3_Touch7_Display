@@ -13,8 +13,9 @@
  *      switch). This sends an RS485 packet to the other board AND
  *      broadcasts the change over WebSocket to any connected browsers.
  *
- *   2. An RS485 packet arriving from another identical board (this module
- *      subscribes to rs485_protocol's callbacks itself). This updates the
+ *   2. A frame arriving from another identical board over the active
+ *      Ports transport (this module subscribes to comm_protocol's
+ *      callbacks itself). This updates the
  *      local LVGL widgets AND broadcasts over WebSocket -- but does NOT
  *      send its own RS485 packet back out, which is what prevents an
  *      infinite echo loop between two connected boards.
@@ -37,9 +38,9 @@ struct State {
     bool toggle_state = false;
 };
 
-/** The identifier for the one sample toggle used in this boilerplate. Add
- *  more IDs here if you add more toggles to the Machine scene later. */
-constexpr uint8_t TOGGLE_ID_SAMPLE = 0;
+/** Bit position of the one sample toggle in the compact status bitfield
+ *  (see comm_protocol.h). Future toggles get bits 1..7. */
+constexpr uint8_t TOGGLE_BIT_SAMPLE = 0;
 
 /** Called to move the on-screen widgets when state changes for a reason
  *  OTHER than the local UI itself (i.e. from RS485 or the web). Register
@@ -53,7 +54,7 @@ void setUiCallbacks(ApplyDialCallback apply_dial, ApplyToggleCallback apply_togg
 using StateChangeCallback = std::function<void(const State &state)>;
 void onStateChange(StateChangeCallback cb);
 
-/** Hooks into rs485_protocol's receive callbacks. Call once at startup. */
+/** Hooks into comm_protocol's receive callbacks. Call once at startup. */
 void init();
 
 /** The user dragged the dial / flipped the switch on THIS board's screen. */

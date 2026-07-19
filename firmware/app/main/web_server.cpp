@@ -13,8 +13,10 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 
+#include "fw_update.h"
 #include "machine_state.h"
 #include "ota_handler.h"
+#include "ports.h"
 #include "storage.h"
 #include "wifi_manager.h"
 
@@ -206,6 +208,113 @@ esp_err_t apiWifiForgetHandler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// --- Ports (peer-link transport selection) -------------------------------
+
+esp_err_t apiPortsGetHandler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "active", ports::name(ports::active()));
+    cJSON *list = cJSON_AddArrayToObject(root, "transports");
+    for (const auto &info : ports::transports()) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", info.name);
+        cJSON_AddStringToObject(item, "label", info.label);
+        cJSON_AddBoolToObject(item, "enabled", info.enabled);
+        cJSON_AddItemToArray(list, item);
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+esp_err_t apiPortsSetHandler(httpd_req_t *req)
+{
+    char buf[128];
+    int received = httpd_req_recv(req, buf, std::min(req->content_len, sizeof(buf) - 1));
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    cJSON *json = cJSON_Parse(buf);
+    cJSON *name_item = json ? cJSON_GetObjectItem(json, "transport") : nullptr;
+    bool ok = false;
+    if (cJSON_IsString(name_item)) {
+        for (const auto &info : ports::transports()) {
+            if (std::strcmp(info.name, name_item->valuestring) == 0) {
+                ok = ports::setActive(info.id);
+                break;
+            }
+        }
+    }
+    cJSON_Delete(json);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"unknown or disabled transport\"}");
+    return ESP_OK;
+}
+
+// --- Update (device-to-device firmware transfer) --------------------------
+
+const char *updateStateName(fw_update::State s)
+{
+    switch (s) {
+    case fw_update::State::Idle:        return "idle";
+    case fw_update::State::Sending:     return "sending";
+    case fw_update::State::Receiving:   return "receiving";
+    case fw_update::State::SendDone:    return "send_done";
+    case fw_update::State::ReceiveDone: return "receive_done";
+    case fw_update::State::Failed:      return "failed";
+    }
+    return "?";
+}
+
+esp_err_t apiUpdateInfoHandler(httpd_req_t *req)
+{
+    fw_update::AppInfo info = fw_update::appInfo();
+    fw_update::Status st = fw_update::status();
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "running_slot", info.running_slot.c_str());
+    cJSON_AddStringToObject(root, "version", info.version.c_str());
+    cJSON_AddStringToObject(root, "idf_version", info.idf_version.c_str());
+    cJSON_AddStringToObject(root, "compile_time", info.compile_time.c_str());
+    cJSON_AddNumberToObject(root, "image_size", info.image_size);
+    cJSON_AddStringToObject(root, "ota_state", info.ota_state.c_str());
+    cJSON_AddStringToObject(root, "transfer_state", updateStateName(st.state));
+    cJSON_AddNumberToObject(root, "transfer_total", st.total_bytes);
+    cJSON_AddNumberToObject(root, "transfer_done", st.done_bytes);
+    cJSON_AddStringToObject(root, "transfer_message", st.message.c_str());
+
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+esp_err_t apiUpdateSendHandler(httpd_req_t *req)
+{
+    bool ok = fw_update::startSend();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, ok ? "{\"ok\":true}"
+                                : "{\"ok\":false,\"error\":\"busy or update pending reboot\"}");
+    return ESP_OK;
+}
+
+esp_err_t apiUpdateRebootHandler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"message\":\"rebooting\"}");
+    fw_update::rebootIntoUpdate();
+    return ESP_OK;
+}
+
 // --- WebSocket: makes the web UI a live extension of the touchscreen -----
 
 std::string buildStateJson(const machine_state::State &state)
@@ -344,7 +453,7 @@ void start()
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 17;
     config.stack_size = 8192;
     config.lru_purge_enable = true;
 
@@ -358,6 +467,11 @@ void start()
     static const httpd_uri_t connect_uri = {"/api/wifi/connect", HTTP_POST, apiWifiConnectHandler, nullptr};
     static const httpd_uri_t forget_uri = {"/api/wifi/forget", HTTP_POST, apiWifiForgetHandler, nullptr};
     static const httpd_uri_t ota_uri = {"/api/ota", HTTP_POST, ota_handler::handlePost, nullptr};
+    static const httpd_uri_t ports_get_uri = {"/api/ports", HTTP_GET, apiPortsGetHandler, nullptr};
+    static const httpd_uri_t ports_set_uri = {"/api/ports", HTTP_POST, apiPortsSetHandler, nullptr};
+    static const httpd_uri_t update_info_uri = {"/api/update/info", HTTP_GET, apiUpdateInfoHandler, nullptr};
+    static const httpd_uri_t update_send_uri = {"/api/update/send", HTTP_POST, apiUpdateSendHandler, nullptr};
+    static const httpd_uri_t update_reboot_uri = {"/api/update/reboot", HTTP_POST, apiUpdateRebootHandler, nullptr};
     static const httpd_uri_t ws_uri = {"/ws", HTTP_GET, wsHandler, nullptr, true};
     static const httpd_uri_t static_uri = {"/*", HTTP_GET, staticFileHandler, nullptr};
 
@@ -366,6 +480,11 @@ void start()
     httpd_register_uri_handler(s_server, &connect_uri);
     httpd_register_uri_handler(s_server, &forget_uri);
     httpd_register_uri_handler(s_server, &ota_uri);
+    httpd_register_uri_handler(s_server, &ports_get_uri);
+    httpd_register_uri_handler(s_server, &ports_set_uri);
+    httpd_register_uri_handler(s_server, &update_info_uri);
+    httpd_register_uri_handler(s_server, &update_send_uri);
+    httpd_register_uri_handler(s_server, &update_reboot_uri);
     httpd_register_uri_handler(s_server, &ws_uri);
     httpd_register_uri_handler(s_server, &static_uri); // must be registered last (wildcard)
 

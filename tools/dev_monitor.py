@@ -27,9 +27,13 @@ Usage:
 Keys (while this terminal is focused):
     0         target ALL devices (this is the default on startup)
     1-9       target only that device number (see the numbering with 'h')
-    b         build `--stage` only (compile check, no flash -- device-
-              independent, always builds regardless of the current target)
-    r         rebuild + reflash the TARGETED device(s), then resume logs
+    r         rebuild + reflash the default stage (--stage, normally 'app')
+              to the TARGETED device(s), then resume logs
+    f         rebuild + reflash the 'factory' (recovery) stage
+    a         rebuild + reflash 'all' (factory + app) -- the whole firmware
+    b         build the default stage only (compile check, no flash --
+              device-independent, runs regardless of the current target)
+    w         rebuild the web UI only (npm build; flashed on next 'r'/'a')
     h         show the device list (which /dev/ttyACM... is which number)
               and this key reference
     Ctrl+C    quit
@@ -59,9 +63,15 @@ RESET = "\033[0m"
 DEVICE_COLORS = ["\033[36m", "\033[35m", "\033[33m", "\033[32m", "\033[34m", "\033[91m"]
 
 
-def default_ports():
-    """Auto-detects connected boards when no --port is given at all."""
-    return sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+def default_ports(include_usb: bool = False):
+    """Auto-detects connected boards when no --port is given at all.
+    Only /dev/ttyACM* by default (this project's boards enumerate via their
+    CH343 bridge as ttyACM); /dev/ttyUSB* devices are usually unrelated
+    boards/dongles and are only included when --usbdevs is passed."""
+    ports = sorted(glob.glob("/dev/ttyACM*"))
+    if include_usb:
+        ports += sorted(glob.glob("/dev/ttyUSB*"))
+    return ports
 
 
 def open_port_passively(port: str, baud: int) -> serial.Serial:
@@ -168,6 +178,19 @@ def build_only(repo_root: str, stage: str, variant: str) -> None:
         print(f"{GREEN}==> Build succeeded. (Press 'r' to flash it.){RESET}\n")
 
 
+def build_web(repo_root: str) -> None:
+    """Rebuilds only the React web UI (web/dist). The result is packed into
+    the webapp partition image on the next firmware build, so follow up
+    with 'r' (or 'a') to actually get it onto a board."""
+    print(f"\n{YELLOW}==> Rebuilding the web UI (npm build)...{RESET}")
+    build_sh = os.path.join(repo_root, "build.sh")
+    build = subprocess.run([build_sh, "--web"], cwd=repo_root)
+    if build.returncode != 0:
+        print(f"{RED}==> Web build failed (exit {build.returncode}).{RESET}\n")
+    else:
+        print(f"{GREEN}==> Web UI built. (Press 'r' to flash it with the app.){RESET}\n")
+
+
 def rebuild_and_flash(repo_root: str, stage: str, variant: str, devices) -> None:
     """Builds once (the same binary goes to every targeted device), then
     flashes each targeted device in turn. Each device's serial connection is
@@ -212,8 +235,11 @@ def print_help(devices, stage: str, variant: str, target: int) -> None:
     print(f"\n{BOLD}=== Keys ==={RESET}")
     print("  0        Target ALL devices")
     print("  1-9      Target only that device number")
+    print(f"  r        Rebuild + reflash '{stage}' to the TARGETED device(s)")
+    print("  f        Rebuild + reflash 'factory' (recovery stage)")
+    print("  a        Rebuild + reflash 'all' (factory + app)")
     print(f"  b        Build '{stage}' only (compile check, no flash)")
-    print("  r        Rebuild + reflash the TARGETED device(s), then resume logs")
+    print("  w        Rebuild web UI only (npm build; flash it with 'r'/'a')")
     print("  h        Show this help")
     print("  Ctrl+C   Quit")
 
@@ -243,11 +269,15 @@ def main() -> int:
                      help="Board hardware variant 'r'/'b' build/reflash with (default: 7). Must match "
                           "whatever the connected device(s) actually are, or 'r' will flash the wrong config.")
     ap.add_argument("--repo-root", required=True, help="Path to the touch-esp32 repo root")
+    ap.add_argument("--usbdevs", action="store_true",
+                     help="Also auto-detect /dev/ttyUSB* devices (default: /dev/ttyACM* only, "
+                          "so unrelated boards/dongles are never picked up by accident)")
     args = ap.parse_args()
 
-    port_list = args.ports if args.ports else default_ports()
+    port_list = args.ports if args.ports else default_ports(args.usbdevs)
     if not port_list:
-        print(f"{RED}No serial devices found (looked for /dev/ttyUSB* and /dev/ttyACM*).{RESET}")
+        print(f"{RED}No serial devices found (looked for /dev/ttyACM*"
+              f"{' and /dev/ttyUSB*' if args.usbdevs else ''}).{RESET}")
         print("Plug in a board and make sure your user is in the 'dialout' group (./build.sh --setup).")
         return 1
 
@@ -304,12 +334,21 @@ def main() -> int:
                     elif ch.lower() == "b":
                         build_only(args.repo_root, args.stage, args.variant)
 
-                    elif ch.lower() == "r":
+                    elif ch.lower() == "w":
+                        build_web(args.repo_root)
+
+                    # r/f/a all share the same rebuild+reflash flow and only
+                    # differ in WHICH build.sh stage they pass through:
+                    #   r -> the default stage (--stage, normally 'app')
+                    #   f -> 'factory' (the recovery stage)
+                    #   a -> 'all' (factory + app together)
+                    elif ch.lower() in ("r", "f", "a"):
+                        stage_for_key = {"r": args.stage, "f": "factory", "a": "all"}[ch.lower()]
                         targeted = devices_for_target(devices, target)
                         if not targeted:
                             print(f"\n{RED}==> No devices match the current target; nothing to flash.{RESET}\n")
                         else:
-                            rebuild_and_flash(args.repo_root, args.stage, args.variant, targeted)
+                            rebuild_and_flash(args.repo_root, stage_for_key, args.variant, targeted)
 
                 else:
                     device = ser_to_device[r]

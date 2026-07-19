@@ -3,33 +3,28 @@
 namespace ui_scene_manager {
 namespace {
 
-lv_obj_t *s_machine_root = nullptr;
-lv_obj_t *s_network_root = nullptr;
+lv_obj_t *s_roots[static_cast<size_t>(Scene::_Count)] = {};
 
 } // namespace
 
-void registerScenes(lv_obj_t *machine_root, lv_obj_t *network_root)
+void registerScene(Scene scene, lv_obj_t *root)
 {
-    s_machine_root = machine_root;
-    s_network_root = network_root;
+    s_roots[static_cast<size_t>(scene)] = root;
 }
 
 void show(Scene scene)
 {
-    if (s_machine_root == nullptr || s_network_root == nullptr) {
-        return;
-    }
-
-    bool show_machine = (scene == Scene::Machine);
-
-    if (show_machine) {
-        lv_obj_clear_flag(s_machine_root, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_network_root, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(s_machine_root);
-    } else {
-        lv_obj_clear_flag(s_network_root, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_machine_root, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(s_network_root);
+    for (size_t i = 0; i < static_cast<size_t>(Scene::_Count); i++) {
+        lv_obj_t *root = s_roots[i];
+        if (root == nullptr) {
+            continue;
+        }
+        if (i == static_cast<size_t>(scene)) {
+            lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(root);
+        } else {
+            lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 

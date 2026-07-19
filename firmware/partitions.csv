@@ -2,21 +2,23 @@
 # 16MB flash layout for a two-stage firmware with real A/B OTA for the app.
 # Shared by both ESP-IDF projects in this repo (firmware/factory, firmware/app)
 # via `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=../partitions.csv` in sdkconfig.defaults.
-#   - factory  : splash / bootstrap-chooser stage (firmware/factory). Shown on
-#                first boot (or after a factory-reset that clears `otadata`).
-#                Displays a placeholder "Continue" UI, then points the OTA boot
-#                selector at `ota_0` and restarts. Left alone by normal field
-#                firmware updates, so it acts as a permanent, minimal recovery
-#                stage.
+#   - factory  : recovery app (firmware/factory). Runs on first boot, after a
+#                factory reset, when forced via the BOOT button, or when OTA
+#                rollback exhausts every valid slot. Auto-boots the main app
+#                after a short countdown; tapping the screen opens a recovery
+#                menu (boot either slot, view slot health, erase settings).
+#                Never touched by field firmware updates, so it's a permanent
+#                rescue path.
 #   - ota_0/ota_1: the real "brains" application (firmware/app), as a standard
-#                ESP-IDF A/B OTA pair. A future in-field update, triggered from
-#                the on-device web UI (NOT the ESP-IDF toolchain), writes the
-#                new firmware into whichever slot isn't currently running (via
-#                esp_ota_ops, see components/web_server/ota_handler.cpp) and
-#                reboots straight into it.
+#                ESP-IDF A/B OTA pair with rollback enabled
+#                (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE): an in-field update
+#                (POST /api/ota, see ota_handler.cpp) writes the inactive slot;
+#                the new image must pass its startup self-test
+#                (boot_health.cpp) or the stock bootloader rolls back.
 #   - webapp   : SPIFFS partition holding the built React UI bundle, served by
 #                the web server from within the app. Can also be re-populated
 #                from an SD card at runtime.
+# NOTE: NVS holds only user settings -- boot decisions live in otadata alone.
 nvs,        data, nvs,      0x9000,    0x5000,
 otadata,    data, ota,      0xe000,    0x2000,
 factory,    app,  factory,  0x10000,   0x100000,

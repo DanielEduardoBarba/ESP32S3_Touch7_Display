@@ -9,28 +9,48 @@ itself on port 80.
 
 ## Architecture
 
-The flash is split into a small, rarely-changed **factory** stage and a
-swappable **app** stage, so the app can be updated in the field (e.g. from its
-own web UI) without ever touching the factory stage or needing this dev
-toolchain again:
+The flash layout follows the standard ESP-IDF high-reliability boot flow:
+stock ROM + 2nd-stage bootloaders, `otadata` slot selection, two redundant
+OTA slots for the main app, and a small, rarely-changed **factory/recovery**
+app that field updates can never overwrite:
 
 ```
 16MB flash
-├─ nvs        (Wi-Fi credentials, small KV data)
-├─ otadata    (which app slot to boot: factory vs ota_0/ota_1)
-├─ factory    ── firmware/factory ── splash screen, "Continue" placeholder UI.
-│                On first boot (or after a factory-reset), shows this screen,
-│                then points the boot selector at ota_0 and reboots.
+├─ nvs        (Wi-Fi credentials, small KV data -- never part of boot decisions)
+├─ otadata    (which app slot to boot: factory vs ota_0/ota_1 + rollback state)
+├─ factory    ── firmware/factory ── recovery app. Auto-boots the main app
+│                after a short countdown (tap to stay in the recovery menu:
+│                boot either slot manually, see slot health, erase settings).
 ├─ ota_0      ─┐
 ├─ ota_1      ─┴ firmware/app ── "the brains": LVGL UI, WiFi manager, RS485,
-│                and the web server. A/B OTA pair so a future firmware update
-│                (POST /api/ota) can write the *inactive* slot and reboot into
-│                it, independent of this repo's toolchain.
+│                and the web server. A/B OTA pair: a field update (POST
+│                /api/ota) writes the *inactive* slot and reboots into it.
 └─ webapp     (SPIFFS) the built React UI (web/dist), served on port 80.
                Can also be served from an SD card instead (see storage.cpp).
 ```
 
 See [firmware/partitions.csv](firmware/partitions.csv) for exact offsets/sizes.
+
+### Boot, update & recovery flow
+
+All reliability mechanics are stock ESP-IDF (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`)
+-- there is no custom boot-manager layer:
+
+- **Normal boot**: bootloader reads `otadata` and starts the active OTA slot.
+- **OTA update**: the running app downloads the new image into the inactive
+  slot ([ota_handler.cpp](firmware/app/main/ota_handler.cpp)); after reboot the new image runs in
+  *pending-verify* state and must pass its startup self-test (full subsystem
+  bring-up, see [boot_health.cpp](firmware/app/main/boot_health.cpp)) before `esp_ota_mark_app_valid_cancel_rollback()`
+  locks it in. If it crashes first, the bootloader **rolls back** to the
+  previous working image automatically; if no valid slot remains, it falls
+  back to the recovery app.
+- **Forced recovery**: press RESET, then immediately hold the **BOOT** button
+  while the app starts (~0.5s) -- the app reboots into the recovery app.
+  (Holding BOOT *through* RESET instead enters the ROM serial download mode;
+  that's a silicon feature.)
+- **Recovery app**: shows both slots' health, boots either slot manually,
+  and can erase NVS ("restore defaults" -- clears WiFi credentials). On a
+  fresh flash it simply counts down and auto-boots the main app.
 
 Everything in the `app` stage is event-driven / runs as its own FreeRTOS task,
 so the LVGL UI, WiFi, RS485, and the web server never block each other:
@@ -158,10 +178,11 @@ idf.py -C firmware/app build
 
 ## First boot
 
-1. Board powers on into the `factory` splash screen.
-2. Tap **Continue** → device reboots into the `app` stage (`ota_0`).
-3. Use the network icon (top-right) to connect to WiFi.
-4. Once connected, visit `http://<device-ip>/` in a browser for the web UI.
+1. Board powers on into the `factory` recovery screen, which counts down and
+   **auto-boots the main app after 5 s** (tap the screen instead to stay in
+   the recovery menu).
+2. Use the network icon (top-right) to connect to WiFi.
+3. Once connected, visit `http://<device-ip>/` in a browser for the web UI.
 
 ## Known TODOs / things to verify against your specific board revision
 

@@ -1,5 +1,6 @@
 #include "ui_header.h"
 
+#include "app_config.h"
 #include "ui_scene_manager.h"
 #include "ui_wifi.h"
 
@@ -35,6 +36,18 @@ void machineMenuItemClickedCb(lv_event_t *e)
 void networkMenuItemClickedCb(lv_event_t *e)
 {
     ui_scene_manager::show(ui_scene_manager::Scene::Network);
+    hideHamburgerMenu();
+}
+
+void portsMenuItemClickedCb(lv_event_t *e)
+{
+    ui_scene_manager::show(ui_scene_manager::Scene::Ports);
+    hideHamburgerMenu();
+}
+
+void updateMenuItemClickedCb(lv_event_t *e)
+{
+    ui_scene_manager::show(ui_scene_manager::Scene::Update);
     hideHamburgerMenu();
 }
 
@@ -79,14 +92,20 @@ void buildHamburgerMenu(lv_obj_t *screen)
     lv_obj_set_style_border_color(s_hamburger_menu, lv_color_hex(0x30363d), 0);
     lv_obj_set_style_border_width(s_hamburger_menu, 1, 0);
 
-    // Two scenes today: Machine (the default view) and Network (WiFi/device
-    // status). Add more lv_list_add_btn() entries here if more scenes are
-    // added later.
+    // Scenes: Machine (default view), Network (WiFi/device status), Ports
+    // (peer-link transport selection), Update (device-to-device firmware
+    // update). Add more lv_list_add_btn() entries here for future scenes.
     lv_obj_t *machine_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_SETTINGS, "Machine");
     lv_obj_add_event_cb(machine_item, machineMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t *network_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_WIFI, "Network");
     lv_obj_add_event_cb(network_item, networkMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *ports_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_USB, "Ports");
+    lv_obj_add_event_cb(ports_item, portsMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *update_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_DOWNLOAD, "Update");
+    lv_obj_add_event_cb(update_item, updateMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
 }
 
 } // namespace
@@ -110,6 +129,11 @@ lv_coord_t build(lv_obj_t *screen)
     lv_obj_t *home_btn = createIconButton(header, LV_SYMBOL_HOME);
     lv_obj_align_to(home_btn, hamburger_btn, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     lv_obj_add_event_cb(home_btn, homeBtnClickedCb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *version_label = lv_label_create(header);
+    lv_label_set_text(version_label, "v" APP_VERSION);
+    lv_obj_set_style_text_color(version_label, lv_color_hex(0x8b949e), 0);
+    lv_obj_align_to(version_label, home_btn, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
     lv_obj_t *info_btn = createIconButton(header, "i");
     lv_obj_align(info_btn, LV_ALIGN_RIGHT_MID, 0, 0);

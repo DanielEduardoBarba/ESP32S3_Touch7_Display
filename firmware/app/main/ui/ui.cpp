@@ -5,7 +5,9 @@
 #include "ui_keyboard.h"
 #include "ui_machine.h"
 #include "ui_network.h"
+#include "ui_ports.h"
 #include "ui_scene_manager.h"
+#include "ui_update.h"
 #include "ui_wifi.h"
 
 namespace ui {
@@ -21,13 +23,15 @@ void init(esp_panel::board::Board *board)
 
     lv_coord_t header_height = ui_header::build(screen);
 
-    // Build both scenes up front (simpler and fast enough at this UI size
+    // Build all scenes up front (simpler and fast enough at this UI size
     // than lazily creating them on first visit); the scene manager then
     // just shows/hides whichever one is active.
-    lv_obj_t *machine_root = ui_machine::build(screen, header_height);
-    lv_obj_t *network_root = ui_network::build(screen, header_height);
-    ui_scene_manager::registerScenes(machine_root, network_root);
-    ui_scene_manager::show(ui_scene_manager::Scene::Machine); // Machine is the default/home scene
+    using Scene = ui_scene_manager::Scene;
+    ui_scene_manager::registerScene(Scene::Machine, ui_machine::build(screen, header_height));
+    ui_scene_manager::registerScene(Scene::Network, ui_network::build(screen, header_height));
+    ui_scene_manager::registerScene(Scene::Ports, ui_ports::build(screen, header_height));
+    ui_scene_manager::registerScene(Scene::Update, ui_update::build(screen, header_height));
+    ui_scene_manager::show(Scene::Machine); // Machine is the default/home scene
 
     ui_wifi::init(screen);
     ui_keyboard::init(screen);
