@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include "lvgl.h"
+#include "ui_debug.h"
 #include "ui_header.h"
 #include "ui_keyboard.h"
 #include "ui_machine.h"
@@ -31,6 +32,7 @@ void init(esp_panel::board::Board *board)
     ui_scene_manager::registerScene(Scene::Network, ui_network::build(screen, header_height));
     ui_scene_manager::registerScene(Scene::Ports, ui_ports::build(screen, header_height));
     ui_scene_manager::registerScene(Scene::Update, ui_update::build(screen, header_height));
+    ui_scene_manager::registerScene(Scene::Debug, ui_debug::build(screen, header_height));
     ui_scene_manager::show(Scene::Machine); // Machine is the default/home scene
 
     ui_wifi::init(screen);

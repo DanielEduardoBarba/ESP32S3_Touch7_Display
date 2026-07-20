@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 
 #include "fw_update.h"
+#include "log_store.h"
 #include "machine_state.h"
 #include "ota_handler.h"
 #include "ports.h"
@@ -214,6 +215,12 @@ esp_err_t apiPortsGetHandler(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "active", ports::name(ports::active()));
+    cJSON_AddNumberToObject(root, "baud", ports::baud());
+    cJSON_AddBoolToObject(root, "locked", ports::changeLocked());
+    cJSON *rates = cJSON_AddArrayToObject(root, "baud_rates");
+    for (uint32_t rate : ports::baudRates()) {
+        cJSON_AddItemToArray(rates, cJSON_CreateNumber(rate));
+    }
     cJSON *list = cJSON_AddArrayToObject(root, "transports");
     for (const auto &info : ports::transports()) {
         cJSON *item = cJSON_CreateObject();
@@ -242,7 +249,9 @@ esp_err_t apiPortsSetHandler(httpd_req_t *req)
 
     cJSON *json = cJSON_Parse(buf);
     cJSON *name_item = json ? cJSON_GetObjectItem(json, "transport") : nullptr;
+    cJSON *baud_item = json ? cJSON_GetObjectItem(json, "baud") : nullptr;
     bool ok = false;
+    const char *error = "unknown or disabled transport";
     if (cJSON_IsString(name_item)) {
         for (const auto &info : ports::transports()) {
             if (std::strcmp(info.name, name_item->valuestring) == 0) {
@@ -250,11 +259,23 @@ esp_err_t apiPortsSetHandler(httpd_req_t *req)
                 break;
             }
         }
+    } else if (cJSON_IsNumber(baud_item)) {
+        // Broadcasts the change to the peer first -- see ports::setBaud().
+        ok = ports::setBaud(static_cast<uint32_t>(baud_item->valuedouble));
+        error = "unsupported baud rate";
+    }
+    if (!ok && ports::changeLocked()) {
+        error = "locked: firmware update transfer in progress";
     }
     cJSON_Delete(json);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"unknown or disabled transport\"}");
+    if (ok) {
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else {
+        std::string resp = std::string("{\"ok\":false,\"error\":\"") + error + "\"}";
+        httpd_resp_sendstr(req, resp.c_str());
+    }
     return ESP_OK;
 }
 
@@ -273,13 +294,25 @@ const char *updateStateName(fw_update::State s)
     return "?";
 }
 
+const char *peerCompareName(fw_update::PeerCompare c)
+{
+    switch (c) {
+    case fw_update::PeerCompare::PeerNewer: return "peer_newer";
+    case fw_update::PeerCompare::PeerOlder: return "peer_older";
+    case fw_update::PeerCompare::Same:      return "same";
+    default:                                return "unknown";
+    }
+}
+
 esp_err_t apiUpdateInfoHandler(httpd_req_t *req)
 {
     fw_update::AppInfo info = fw_update::appInfo();
     fw_update::Status st = fw_update::status();
+    fw_update::PeerInfo peer = fw_update::peerInfo();
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "running_slot", info.running_slot.c_str());
+    cJSON_AddStringToObject(root, "app_version", info.app_version.c_str());
     cJSON_AddStringToObject(root, "version", info.version.c_str());
     cJSON_AddStringToObject(root, "idf_version", info.idf_version.c_str());
     cJSON_AddStringToObject(root, "compile_time", info.compile_time.c_str());
@@ -291,6 +324,10 @@ esp_err_t apiUpdateInfoHandler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "transfer_bps", st.bytes_per_sec);
     cJSON_AddNumberToObject(root, "transfer_elapsed_ms", st.elapsed_ms);
     cJSON_AddStringToObject(root, "transfer_message", st.message.c_str());
+    cJSON_AddBoolToObject(root, "peer_known", peer.known);
+    cJSON_AddBoolToObject(root, "peer_no_response", peer.no_response);
+    cJSON_AddStringToObject(root, "peer_version", peer.version.c_str());
+    cJSON_AddStringToObject(root, "peer_compare", peerCompareName(peer.compare));
 
     char *json = cJSON_PrintUnformatted(root);
     httpd_resp_set_type(req, "application/json");
@@ -306,6 +343,38 @@ esp_err_t apiUpdateSendHandler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, ok ? "{\"ok\":true}"
                                 : "{\"ok\":false,\"error\":\"busy or update pending reboot\"}");
+    return ESP_OK;
+}
+
+esp_err_t apiUpdateSyncHandler(httpd_req_t *req)
+{
+    fw_update::syncPeer();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+esp_err_t apiUpdatePullHandler(httpd_req_t *req)
+{
+    bool ok = fw_update::startPull();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, ok ? "{\"ok\":true}"
+                                : "{\"ok\":false,\"error\":\"busy or update pending reboot\"}");
+    return ESP_OK;
+}
+
+esp_err_t apiLogsHandler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *lines = cJSON_AddArrayToObject(root, "lines");
+    for (const auto &line : log_store::snapshot()) {
+        cJSON_AddItemToArray(lines, cJSON_CreateString(line.c_str()));
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    cJSON_Delete(root);
     return ESP_OK;
 }
 
@@ -455,7 +524,7 @@ void start()
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 17;
+    config.max_uri_handlers = 20;
     config.stack_size = 8192;
     config.lru_purge_enable = true;
 
@@ -473,7 +542,10 @@ void start()
     static const httpd_uri_t ports_set_uri = {"/api/ports", HTTP_POST, apiPortsSetHandler, nullptr};
     static const httpd_uri_t update_info_uri = {"/api/update/info", HTTP_GET, apiUpdateInfoHandler, nullptr};
     static const httpd_uri_t update_send_uri = {"/api/update/send", HTTP_POST, apiUpdateSendHandler, nullptr};
+    static const httpd_uri_t update_sync_uri = {"/api/update/sync", HTTP_POST, apiUpdateSyncHandler, nullptr};
+    static const httpd_uri_t update_pull_uri = {"/api/update/pull", HTTP_POST, apiUpdatePullHandler, nullptr};
     static const httpd_uri_t update_reboot_uri = {"/api/update/reboot", HTTP_POST, apiUpdateRebootHandler, nullptr};
+    static const httpd_uri_t logs_uri = {"/api/logs", HTTP_GET, apiLogsHandler, nullptr};
     static const httpd_uri_t ws_uri = {"/ws", HTTP_GET, wsHandler, nullptr, true};
     static const httpd_uri_t static_uri = {"/*", HTTP_GET, staticFileHandler, nullptr};
 
@@ -486,7 +558,10 @@ void start()
     httpd_register_uri_handler(s_server, &ports_set_uri);
     httpd_register_uri_handler(s_server, &update_info_uri);
     httpd_register_uri_handler(s_server, &update_send_uri);
+    httpd_register_uri_handler(s_server, &update_sync_uri);
+    httpd_register_uri_handler(s_server, &update_pull_uri);
     httpd_register_uri_handler(s_server, &update_reboot_uri);
+    httpd_register_uri_handler(s_server, &logs_uri);
     httpd_register_uri_handler(s_server, &ws_uri);
     httpd_register_uri_handler(s_server, &static_uri); // must be registered last (wildcard)
 

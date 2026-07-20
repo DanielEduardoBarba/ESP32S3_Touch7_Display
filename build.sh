@@ -84,6 +84,15 @@
 #                                    anywhere. Switching variants on a stage
 #                                    that was already built for the other one
 #                                    auto-cleans its stale build output.
+#                                    Every successful --flash also RECORDS
+#                                    which variant went onto that physical
+#                                    board (keyed by its unique USB serial
+#                                    number, in .board_variants) -- --run/
+#                                    --monitor then auto-detect each
+#                                    connected board's variant from that
+#                                    registry, so a mixed 7 + 7b fleet
+#                                    rebuilds/reflashes each device with the
+#                                    right config without any flags.
 #   ./build.sh --help
 #
 # Notes:
@@ -115,6 +124,12 @@ FIRMWARE_DIR="$SCRIPT_DIR/firmware"
 WEB_DIR="$SCRIPT_DIR/web"
 PARTITIONS_CSV="$FIRMWARE_DIR/partitions.csv"
 
+# Registry of which variant each PHYSICAL board was last flashed with,
+# keyed by the board's unique USB serial number (one "<serial> <variant>"
+# line per board). Written by cmd_flash, read by --run/--monitor to
+# auto-detect the right variant per connected device.
+BOARD_VARIANTS_FILE="$SCRIPT_DIR/.board_variants"
+
 IDF_INSTALL_DIR="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf}"
 IDF_BRANCH="${IDF_BRANCH:-v5.3.1}"
 IDF_TARGET="esp32s3"
@@ -142,7 +157,7 @@ warn() { echo -e "${c_bold}${c_yellow}==>${c_reset} $*"; }
 err()  { echo -e "${c_bold}${c_red}==>${c_reset} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-usage() { sed -n '2,107p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,116p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # --------------------------------------------------------------------------
 # Setup (fresh machine bootstrap)
@@ -434,6 +449,7 @@ cmd_flash() {
         *) die "Unknown stage '$stage' (expected factory|app|all|full)" ;;
     esac
 
+    record_board_variant "$port"
     log "Flash complete. Reset the board (or power-cycle) to boot into the new firmware."
 }
 
@@ -478,7 +494,8 @@ cmd_monitor() {
     # RTS/DTR, so it just watches whatever is already running, and adds
     # Expo-Go-style "press r to rebuild+reflash+resume" / device-targeting
     # shortcuts (press 'h' inside it for the full key reference).
-    python3 "$SCRIPT_DIR/tools/dev_monitor.py" "${ports[@]}" --stage "$stage" --variant "$VARIANT" --repo-root "$SCRIPT_DIR"
+    python3 "$SCRIPT_DIR/tools/dev_monitor.py" "${ports[@]}" --stage "$stage" --variant "$VARIANT" \
+        --variant-map "$BOARD_VARIANTS_FILE" --repo-root "$SCRIPT_DIR"
 }
 
 # Just connects and watches live serial output from every connected board --
@@ -540,6 +557,32 @@ ensure_variant_consistency() {
         fi
     fi
     echo "$VARIANT" > "$marker"
+}
+
+# The unique USB serial number of the board behind a /dev/tty* node (the
+# ESP32-S3's native USB serial is derived from its MAC, so it's stable per
+# physical board no matter which ttyACM number it enumerates as).
+port_usb_serial() {
+    udevadm info -q property -n "$1" 2>/dev/null | sed -n 's/^ID_SERIAL_SHORT=//p' | head -n1
+}
+
+# Records "this physical board runs variant $VARIANT" after a successful
+# flash. --run/--monitor read this registry to auto-detect each connected
+# board's variant, so mixed 7/7b fleets never need manual --variant juggling.
+record_board_variant() {
+    local port="$1"
+    local serial; serial="$(port_usb_serial "$port")"
+    if [[ -z "$serial" ]]; then
+        warn "Could not read a USB serial number for $port; variant not recorded (auto-detect will fall back to --variant)."
+        return 0
+    fi
+    local tmp; tmp="$(mktemp)"
+    if [[ -f "$BOARD_VARIANTS_FILE" ]]; then
+        grep -v "^$serial " "$BOARD_VARIANTS_FILE" > "$tmp" || true
+    fi
+    echo "$serial $VARIANT" >> "$tmp"
+    mv "$tmp" "$BOARD_VARIANTS_FILE"
+    log "Recorded board $serial (on $port) as variant '$VARIANT' -- --run/--monitor will auto-detect it."
 }
 
 # --------------------------------------------------------------------------

@@ -50,6 +50,7 @@ struct Status {
 /** Info about the running image, for the Update scene / web GUI. */
 struct AppInfo {
     std::string running_slot;    // "factory", "ota_0", "ota_1"
+    std::string app_version;     // APP_VERSION (semver, used for peer sync)
     std::string version;         // project git describe
     std::string idf_version;
     std::string compile_time;
@@ -57,7 +58,26 @@ struct AppInfo {
     std::string ota_state;       // valid / pending verify / ...
 };
 
+/** How the peer's APP_VERSION compares to OURS after a version sync. */
+enum class PeerCompare : uint8_t {
+    Unknown,     // no sync yet / peer never answered
+    PeerNewer,   // peer is ahead -> we are OUT OF DATE (pull recommended)
+    Same,        // identical versions
+    PeerOlder,   // peer is behind -> we are AHEAD (push recommended)
+};
+
+struct PeerInfo {
+    bool known = false;
+    bool no_response = false;        // last sync timed out: peer never answered
+                                     // (likely an older firmware without the
+                                     // version-sync feature) -- push is still
+                                     // possible, pull is not
+    std::string version;             // the peer's APP_VERSION
+    PeerCompare compare = PeerCompare::Unknown;
+};
+
 using StatusCallback = std::function<void(const Status &)>;
+using PeerInfoCallback = std::function<void(const PeerInfo &)>;
 
 /** Registers the TYPE_UPDATE frame handler. Call once after comm_protocol::init(). */
 void init();
@@ -65,10 +85,21 @@ void init();
 AppInfo appInfo();
 Status status();
 
+/** Broadcasts our APP_VERSION and asks the peer for theirs ("Sync peer
+ *  device"). Results arrive via onPeerInfoChange() on BOTH devices. */
+void syncPeer();
+
+/** Latest known peer version/comparison (known=false before any sync). */
+PeerInfo peerInfo();
+
 /** Streams this device's RUNNING app image to the peer (background task).
  *  Returns false if a transfer is already running or the device itself has
  *  a pending received update. */
 bool startSend();
+
+/** Asks the peer to stream ITS image to us ("Pull their update"). Same
+ *  busy guards as startSend(). */
+bool startPull();
 
 /** After a successful receive: restart into the new image. */
 void rebootIntoUpdate();
@@ -77,5 +108,9 @@ void rebootIntoUpdate();
  *  task -- UI layers must lock LVGL themselves). May be called multiple
  *  times to register multiple observers. */
 void onStatusChange(StatusCallback cb);
+
+/** GUI/web hook: fired whenever the peer's version/comparison is (re)learned
+ *  (from the RX task -- UI layers must lock LVGL themselves). */
+void onPeerInfoChange(PeerInfoCallback cb);
 
 } // namespace fw_update

@@ -72,10 +72,20 @@ void onScanResults(const std::vector<wifi_manager::ApInfo> &results)
     if (results.empty()) {
         lv_obj_t *empty_label = lv_label_create(s_list);
         lv_label_set_text(empty_label, "Scanning...");
+        lv_obj_set_style_text_color(empty_label, lv_color_hex(0x9aa4b2), 0);
     }
     for (const auto &ap : results) {
         std::string text = ap.ssid + (ap.secure ? "  " LV_SYMBOL_CLOSE : "");
         lv_obj_t *btn = lv_list_add_btn(s_list, LV_SYMBOL_WIFI, text.c_str());
+        // lv_list buttons default to a white background with their own
+        // rounding; blend them into the dark dropdown card instead (same
+        // treatment as the hamburger menu, see ui_header.cpp).
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1c2128), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x272e37), LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(btn, lv_color_hex(0xe6edf3), 0);
+        lv_obj_set_style_radius(btn, 0, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
         if (isConnectedTo(ap.ssid)) {
             // Highlight the currently-connected network so it's obvious at a
             // glance which one is active, without needing to open the modal.
@@ -161,11 +171,16 @@ void buildDropdown(lv_obj_t *screen)
     lv_obj_set_size(s_dropdown, 300, 320);
     lv_obj_align(s_dropdown, LV_ALIGN_TOP_RIGHT, -8, 64);
     lv_obj_add_flag(s_dropdown, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_radius(s_dropdown, 10, 0);
+    lv_obj_set_style_radius(s_dropdown, 12, 0);
+    lv_obj_set_style_clip_corner(s_dropdown, true, 0);
     lv_obj_set_style_bg_color(s_dropdown, lv_color_hex(0x1c2128), 0);
     lv_obj_set_style_border_color(s_dropdown, lv_color_hex(0x30363d), 0);
     lv_obj_set_style_border_width(s_dropdown, 1, 0);
     lv_obj_set_style_pad_all(s_dropdown, 8, 0);
+    lv_obj_clear_flag(s_dropdown, LV_OBJ_FLAG_SCROLLABLE);
+    // Stack title above the list so the list can't overlap/hide the title.
+    lv_obj_set_flex_flow(s_dropdown, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_dropdown, 6, 0);
     lv_obj_move_foreground(s_dropdown);
 
     lv_obj_t *title = lv_label_create(s_dropdown);
@@ -173,10 +188,11 @@ void buildDropdown(lv_obj_t *screen)
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
 
     s_list = lv_list_create(s_dropdown);
-    lv_obj_set_size(s_list, LV_PCT(100), LV_PCT(100));
-    lv_obj_align(s_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_width(s_list, LV_PCT(100));
+    lv_obj_set_flex_grow(s_list, 1);
     lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
+    lv_obj_set_style_pad_all(s_list, 0, 0);
 }
 
 void buildModal(lv_obj_t *screen)

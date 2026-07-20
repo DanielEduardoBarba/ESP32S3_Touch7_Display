@@ -25,6 +25,7 @@
 #include "boot_health.h"
 #include "comm_protocol.h"
 #include "fw_update.h"
+#include "log_store.h"
 #include "lvgl_v8_port.h"
 #include "machine_state.h"
 #include "ports.h"
@@ -67,10 +68,23 @@ extern "C" void app_main(void)
     // board init because GPIO0 becomes an LCD data line afterwards.
     boot_health::checkRecoveryButtonAtBoot();
 
+    // Split the log stream into the console + the Debug scene's ring buffer
+    // as early as possible so the buffer catches the whole boot.
+    log_store::init();
+
     ESP_LOGI(TAG, "Initializing board");
     Board *board = new Board();
     board->init();
     assert(begin_board_with_retries(board));
+
+    // Kill the "white flash": the panel shows garbage/white between the
+    // backlight coming up (inside begin()) and the first real LVGL frame.
+    // Turn the backlight off immediately and back on only after the splash
+    // has actually been rendered below.
+    auto *backlight = board->getBacklight();
+    if (backlight != nullptr) {
+        backlight->off();
+    }
 
     ESP_LOGI(TAG, "Initializing LVGL");
     lvgl_port_init(board->getLCD(), board->getTouch());
@@ -81,7 +95,11 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Building UI");
     lvgl_port_lock(-1);
     ui::init(board);
+    lv_refr_now(nullptr); // splash is on screen before the backlight returns
     lvgl_port_unlock();
+    if (backlight != nullptr) {
+        backlight->on();
+    }
 
     ESP_LOGI(TAG, "Mounting storage");
     storage::init(board);

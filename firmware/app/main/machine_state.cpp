@@ -34,12 +34,15 @@ void notifyStateChange()
  *  but do NOT transmit here -- doing so would immediately bounce the value
  *  back to the sender, forever. Only *local* actions (touchscreen or web)
  *  transmit. */
-void handleRemoteDial(uint8_t value)
+void handleRemoteDial(uint16_t value)
 {
-    ESP_LOGI(TAG, "peer: dial set to %d", value);
-    s_state.dial_value = value;
+    // Wire format is a 2-byte bytefield (room to 65535); this dial only
+    // uses 0-100 of it.
+    uint8_t clamped = value > 100 ? 100 : static_cast<uint8_t>(value);
+    ESP_LOGI(TAG, "peer: dial set to %u", (unsigned)clamped);
+    s_state.dial_value = clamped;
     if (s_apply_dial) {
-        s_apply_dial(value);
+        s_apply_dial(clamped);
     }
     notifyStateChange();
 }

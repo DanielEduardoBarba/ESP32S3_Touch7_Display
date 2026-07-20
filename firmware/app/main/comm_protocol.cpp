@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "esp_log.h"
+#include "app_config.h"
 #include "ports.h"
 
 namespace comm_protocol {
@@ -14,10 +15,11 @@ const char *TAG = "comm";
 
 // Payload ceiling: fits the largest firmware-update chunk plus headroom,
 // while bounding the parser's buffer. (len is 16-bit on the wire.)
-constexpr size_t MAX_PAYLOAD = 512;
+constexpr size_t MAX_PAYLOAD = APP_COMM_MAX_PAYLOAD;
 
 DialCallback s_dial_cb;
 TogglesCallback s_toggles_cb;
+BaudCallback s_baud_cb;
 FrameCallback s_update_cb;
 
 // ---------------------------------------------------------------------------
@@ -83,15 +85,39 @@ void logHexBytes(const char *direction, const uint8_t *data, size_t len)
 // Frame building / sending
 // ---------------------------------------------------------------------------
 
-void sendStatusFrame(uint8_t msg_type, uint8_t bitfield)
+void sendStatusFrame(uint8_t msg_type, const uint8_t *data, size_t data_len)
 {
-    // STX | msg_type | bitfield | crc8 | ETX
-    uint8_t crc_input[2] = {msg_type, bitfield};
-    uint8_t frame[5] = {STX, msg_type, bitfield, crc8(crc_input, 2), ETX};
-    logHexBytes("TX", frame, sizeof(frame));
-    ESP_LOGI(TAG, "TX status frame type=0x%02x bitfield=0x%02x crc=0x%02x (valid)",
-             msg_type, bitfield, frame[3]);
-    ports::send(frame, sizeof(frame));
+    // STX | msg_type | data... | crc8 | ETX
+    uint8_t frame[3 + 4]; // enough for the largest status data width (2)
+    size_t pos = 0;
+    frame[pos++] = STX;
+    frame[pos++] = msg_type;
+    for (size_t i = 0; i < data_len; i++) {
+        frame[pos++] = data[i];
+    }
+    // CRC over msg_type + data.
+    uint8_t crc_input[1 + 4];
+    crc_input[0] = msg_type;
+    std::memcpy(crc_input + 1, data, data_len);
+    frame[pos++] = crc8(crc_input, 1 + data_len);
+    frame[pos++] = ETX;
+
+    logHexBytes("TX", frame, pos);
+    ESP_LOGI(TAG, "TX status frame type=0x%02x data_len=%zu crc=0x%02x (valid)",
+             msg_type, data_len, frame[pos - 2]);
+    ports::send(frame, pos);
+}
+
+/** Data width of a compact status frame, selected by its msg_type:
+ *  bitfield types carry 1 byte, bytefield types carry 2. Returns 0 for
+ *  unknown types (parser resyncs). */
+size_t statusDataLen(uint8_t msg_type)
+{
+    switch (msg_type) {
+    case STATUS_MSG_TOGGLES: return 1; // bitfield: 8 on/off devices
+    case STATUS_MSG_DIAL:    return 2; // bytefield: one 16-bit value
+    default:                 return 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,11 +131,13 @@ enum class ParseState {
     // request/response path
     ReadCmd, ReadLenHi, ReadLenLo, ReadPayload, ReadCrcHi, ReadCrcLo, ReadEtx,
     // compact status path (type had the top bit set)
-    ReadBitfield, ReadStatusCrc, ReadStatusEtx,
+    ReadStatusData, ReadStatusCrc, ReadStatusEtx,
 };
 
 ParseState s_state = ParseState::WaitStx;
-uint8_t s_type = 0, s_cmd = 0, s_bitfield = 0, s_status_crc = 0;
+uint8_t s_type = 0, s_cmd = 0, s_status_crc = 0;
+uint8_t s_status_data[4];
+size_t s_status_len = 0, s_status_got = 0;
 uint16_t s_len = 0, s_crc = 0;
 std::vector<uint8_t> s_payload;
 
@@ -137,8 +165,10 @@ void dispatchRequestFrame()
 
     switch (s_type) {
     case TYPE_CONTROL:
-        if (s_cmd == CMD_DIAL_SET && s_payload.size() == 1 && s_dial_cb) {
-            s_dial_cb(s_payload[0]);
+        if (s_cmd == CMD_BAUD_SET && s_payload.size() == 4 && s_baud_cb) {
+            uint32_t baud = (uint32_t)s_payload[0] << 24 | (uint32_t)s_payload[1] << 16 |
+                            (uint32_t)s_payload[2] << 8 | s_payload[3];
+            s_baud_cb(baud);
         }
         break;
     case TYPE_UPDATE:
@@ -154,18 +184,22 @@ void dispatchRequestFrame()
 
 void dispatchStatusFrame()
 {
-    uint8_t crc_input[2] = {s_type, s_bitfield};
-    uint8_t computed = crc8(crc_input, 2);
+    uint8_t crc_input[1 + 4];
+    crc_input[0] = s_type;
+    std::memcpy(crc_input + 1, s_status_data, s_status_len);
+    uint8_t computed = crc8(crc_input, 1 + s_status_len);
     if (computed != s_status_crc) {
         ESP_LOGW(TAG, "RX status frame type=0x%02x CRC INVALID (got 0x%02x, expected 0x%02x) -- dropped",
                  s_type, s_status_crc, computed);
         return;
     }
-    ESP_LOGI(TAG, "RX status frame type=0x%02x bitfield=0x%02x crc=0x%02x (valid)",
-             s_type, s_bitfield, s_status_crc);
+    ESP_LOGI(TAG, "RX status frame type=0x%02x data_len=%zu crc=0x%02x (valid)",
+             s_type, s_status_len, s_status_crc);
 
     if (s_type == STATUS_MSG_TOGGLES && s_toggles_cb) {
-        s_toggles_cb(s_bitfield);
+        s_toggles_cb(s_status_data[0]);
+    } else if (s_type == STATUS_MSG_DIAL && s_dial_cb) {
+        s_dial_cb((uint16_t)s_status_data[0] << 8 | s_status_data[1]);
     }
 }
 
@@ -180,8 +214,19 @@ void feedByte(uint8_t b)
 
     case ParseState::ReadType:
         s_type = b;
-        // Top bit set = compact status frame; clear = request/response.
-        s_state = (b & 0x80) ? ParseState::ReadBitfield : ParseState::ReadCmd;
+        if (b & 0x80) {
+            // Compact status frame; data width is a function of msg_type.
+            s_status_len = statusDataLen(b);
+            s_status_got = 0;
+            if (s_status_len == 0) {
+                ESP_LOGW(TAG, "RX unknown status msg_type 0x%02x -- resyncing", b);
+                resetParser();
+                break;
+            }
+            s_state = ParseState::ReadStatusData;
+        } else {
+            s_state = ParseState::ReadCmd;
+        }
         break;
 
     // --- request/response path ---
@@ -227,9 +272,11 @@ void feedByte(uint8_t b)
         break;
 
     // --- compact status path ---
-    case ParseState::ReadBitfield:
-        s_bitfield = b;
-        s_state = ParseState::ReadStatusCrc;
+    case ParseState::ReadStatusData:
+        s_status_data[s_status_got++] = b;
+        if (s_status_got >= s_status_len) {
+            s_state = ParseState::ReadStatusCrc;
+        }
         break;
     case ParseState::ReadStatusCrc:
         s_status_crc = b;
@@ -286,14 +333,27 @@ void sendFrame(uint8_t type, uint8_t cmd, const uint8_t *payload, size_t len)
     ports::send(frame.data(), frame.size());
 }
 
-void sendDial(uint8_t value)
+void sendDial(uint16_t value)
 {
-    sendFrame(TYPE_CONTROL, CMD_DIAL_SET, &value, 1);
+    // 2-byte BYTEFIELD status frame: dial is a value-carrying control, so
+    // it gets two bytes (room to 65535) instead of a bit.
+    uint8_t data[2] = {static_cast<uint8_t>(value >> 8), static_cast<uint8_t>(value & 0xFF)};
+    sendStatusFrame(STATUS_MSG_DIAL, data, sizeof(data));
+}
+
+void sendBaudChange(uint32_t baud)
+{
+    uint8_t payload[4] = {
+        static_cast<uint8_t>(baud >> 24), static_cast<uint8_t>(baud >> 16),
+        static_cast<uint8_t>(baud >> 8), static_cast<uint8_t>(baud),
+    };
+    sendFrame(TYPE_CONTROL, CMD_BAUD_SET, payload, sizeof(payload));
 }
 
 void sendToggles(uint8_t bitfield)
 {
-    sendStatusFrame(STATUS_MSG_TOGGLES, bitfield);
+    // 1-byte BITFIELD status frame: on/off devices, one bit each.
+    sendStatusFrame(STATUS_MSG_TOGGLES, &bitfield, 1);
 }
 
 void onDialReceived(DialCallback cb)
@@ -304,6 +364,11 @@ void onDialReceived(DialCallback cb)
 void onTogglesReceived(TogglesCallback cb)
 {
     s_toggles_cb = std::move(cb);
+}
+
+void onBaudChangeReceived(BaudCallback cb)
+{
+    s_baud_cb = std::move(cb);
 }
 
 void onUpdateFrame(FrameCallback cb)

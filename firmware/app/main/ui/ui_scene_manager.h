@@ -3,8 +3,8 @@
 #include "lvgl.h"
 
 /**
- * Switches between the top-level scenes (Machine, Network, Ports, Update)
- * shown below the header bar. Each scene is built once as a full-size
+ * Switches between the top-level scenes (Machine, Network, Ports, Update,
+ * Debug) shown below the header bar. Each scene is built once as a full-size
  * child of the screen; showing one just brings it to the foreground and
  * hides the others, rather than destroying/recreating widgets every time.
  */
@@ -15,6 +15,7 @@ enum class Scene : uint8_t {
     Network,
     Ports,
     Update,
+    Debug,
     _Count,
 };
 

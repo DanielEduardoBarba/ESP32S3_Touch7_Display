@@ -7,7 +7,7 @@
 namespace ui_header {
 namespace {
 
-constexpr lv_coord_t HEADER_HEIGHT = 56;
+constexpr lv_coord_t HEADER_HEIGHT = APP_UI_HEADER_HEIGHT;
 
 lv_obj_t *s_hamburger_menu = nullptr;
 
@@ -51,6 +51,12 @@ void updateMenuItemClickedCb(lv_event_t *e)
     hideHamburgerMenu();
 }
 
+void debugMenuItemClickedCb(lv_event_t *e)
+{
+    ui_scene_manager::show(ui_scene_manager::Scene::Debug);
+    hideHamburgerMenu();
+}
+
 void homeBtnClickedCb(lv_event_t *e)
 {
     // The header's Home icon always jumps to the Machine scene, since that's
@@ -82,30 +88,46 @@ lv_obj_t *createIconButton(lv_obj_t *parent, const char *symbol_or_text)
     return btn;
 }
 
+/** lv_list buttons default to a white background with their own rounding,
+ *  which clashes with the dark card. Make every menu item blend into the
+ *  card (same bg, square corners -- the LIST clips its rounded corners)
+ *  with a subtle pressed shade. */
+lv_obj_t *addMenuItem(lv_obj_t *list, const char *symbol, const char *text,
+                      lv_event_cb_t cb)
+{
+    lv_obj_t *item = lv_list_add_btn(list, symbol, text);
+    lv_obj_set_style_bg_color(item, lv_color_hex(0x1c2128), 0);
+    lv_obj_set_style_bg_opa(item, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(item, lv_color_hex(0x272e37), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(item, lv_color_hex(0xe6edf3), 0);
+    lv_obj_set_style_radius(item, 0, 0);
+    lv_obj_set_style_border_width(item, 0, 0);
+    lv_obj_add_event_cb(item, cb, LV_EVENT_CLICKED, nullptr);
+    return item;
+}
+
 void buildHamburgerMenu(lv_obj_t *screen)
 {
     s_hamburger_menu = lv_list_create(screen);
     lv_obj_set_size(s_hamburger_menu, 180, LV_SIZE_CONTENT);
-    lv_obj_align(s_hamburger_menu, LV_ALIGN_TOP_LEFT, 8, 64);
+    lv_obj_align(s_hamburger_menu, LV_ALIGN_TOP_LEFT, 8, HEADER_HEIGHT + 8);
     lv_obj_add_flag(s_hamburger_menu, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_radius(s_hamburger_menu, 12, 0);
+    lv_obj_set_style_clip_corner(s_hamburger_menu, true, 0);
     lv_obj_set_style_bg_color(s_hamburger_menu, lv_color_hex(0x1c2128), 0);
     lv_obj_set_style_border_color(s_hamburger_menu, lv_color_hex(0x30363d), 0);
     lv_obj_set_style_border_width(s_hamburger_menu, 1, 0);
+    lv_obj_set_style_pad_all(s_hamburger_menu, 0, 0);
 
     // Scenes: Machine (default view), Network (WiFi/device status), Ports
     // (peer-link transport selection), Update (device-to-device firmware
-    // update). Add more lv_list_add_btn() entries here for future scenes.
-    lv_obj_t *machine_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_SETTINGS, "Machine");
-    lv_obj_add_event_cb(machine_item, machineMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *network_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_WIFI, "Network");
-    lv_obj_add_event_cb(network_item, networkMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *ports_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_USB, "Ports");
-    lv_obj_add_event_cb(ports_item, portsMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *update_item = lv_list_add_btn(s_hamburger_menu, LV_SYMBOL_DOWNLOAD, "Update");
-    lv_obj_add_event_cb(update_item, updateMenuItemClickedCb, LV_EVENT_CLICKED, nullptr);
+    // update), Debug (live log view). Add more addMenuItem() calls here
+    // for future scenes.
+    addMenuItem(s_hamburger_menu, LV_SYMBOL_SETTINGS, "Machine", machineMenuItemClickedCb);
+    addMenuItem(s_hamburger_menu, LV_SYMBOL_WIFI, "Network", networkMenuItemClickedCb);
+    addMenuItem(s_hamburger_menu, LV_SYMBOL_USB, "Ports", portsMenuItemClickedCb);
+    addMenuItem(s_hamburger_menu, LV_SYMBOL_DOWNLOAD, "Update", updateMenuItemClickedCb);
+    addMenuItem(s_hamburger_menu, LV_SYMBOL_LIST, "Debug", debugMenuItemClickedCb);
 }
 
 } // namespace

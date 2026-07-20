@@ -98,15 +98,51 @@ def wait_for_port(port: str, timeout_s: float = 8.0) -> bool:
     return False
 
 
+def port_usb_serial(port: str):
+    """The unique USB serial number behind a /dev/tty* node (stable per
+    physical board -- the ESP32-S3 derives it from its MAC), or None."""
+    try:
+        out = subprocess.run(["udevadm", "info", "-q", "property", "-n", port],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if line.startswith("ID_SERIAL_SHORT="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def detect_variant(port: str, variant_map_path, fallback: str):
+    """Auto-detects which board variant (7/7b) this physical device is,
+    from the registry build.sh appends to on every successful flash
+    (.board_variants: '<usb-serial> <variant>' lines). Returns
+    (variant, detected?) -- falls back to --variant when the board was
+    never flashed from this machine."""
+    serial_no = port_usb_serial(port)
+    if serial_no and variant_map_path and os.path.exists(variant_map_path):
+        try:
+            with open(variant_map_path, encoding="utf-8") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) == 2 and parts[0] == serial_no:
+                        return parts[1], True
+        except OSError:
+            pass
+    return fallback, False
+
+
 class Device:
     """One connected board: its serial connection, a per-device read
     buffer (so we print whole lines, not arbitrary chunks), and enough
     identity (index/color/tag) to make multi-device logs readable."""
 
-    def __init__(self, index: int, port: str, baud: int):
+    def __init__(self, index: int, port: str, baud: int, variant: str = "7",
+                 variant_detected: bool = False):
         self.index = index
         self.port = port
         self.baud = baud
+        self.variant = variant                    # board hardware variant (7/7b)
+        self.variant_detected = variant_detected  # True: from .board_variants registry
         self.color = DEVICE_COLORS[(index - 1) % len(DEVICE_COLORS)]
         self.buffer = b""
         self.ser = None
@@ -165,17 +201,20 @@ class Device:
         self.close()
 
 
-def build_only(repo_root: str, stage: str, variant: str) -> None:
+def build_only(repo_root: str, stage: str, devices) -> None:
     """Runs `./build.sh --build <stage> --variant <variant>` only -- no
     flashing, no board reset, so every device's serial connection is left
-    completely undisturbed. Useful for a fast "does it compile" check."""
-    print(f"\n{YELLOW}==> Building '{stage}' for variant '{variant}' (compile check only, not flashing)...{RESET}")
+    completely undisturbed. Builds once per DISTINCT variant among the
+    connected devices (auto-detected), so a mixed 7/7b fleet compile-checks
+    both configs."""
     build_sh = os.path.join(repo_root, "build.sh")
-    build = subprocess.run([build_sh, "--build", stage, "--variant", variant], cwd=repo_root)
-    if build.returncode != 0:
-        print(f"{RED}==> Build failed (exit {build.returncode}).{RESET}\n")
-    else:
-        print(f"{GREEN}==> Build succeeded. (Press 'r' to flash it.){RESET}\n")
+    for variant in sorted({d.variant for d in devices}):
+        print(f"\n{YELLOW}==> Building '{stage}' for variant '{variant}' (compile check only, not flashing)...{RESET}")
+        build = subprocess.run([build_sh, "--build", stage, "--variant", variant], cwd=repo_root)
+        if build.returncode != 0:
+            print(f"{RED}==> Build failed for variant '{variant}' (exit {build.returncode}).{RESET}\n")
+            return
+    print(f"{GREEN}==> Build succeeded. (Press 'r' to flash it.){RESET}\n")
 
 
 def build_web(repo_root: str) -> None:
@@ -191,46 +230,56 @@ def build_web(repo_root: str) -> None:
         print(f"{GREEN}==> Web UI built. (Press 'r' to flash it with the app.){RESET}\n")
 
 
-def rebuild_and_flash(repo_root: str, stage: str, variant: str, devices) -> None:
-    """Builds once (the same binary goes to every targeted device), then
-    flashes each targeted device in turn. Each device's serial connection is
-    closed right before its flash and reopened right after, exactly like
-    the single-device version -- other devices not being flashed keep their
-    connections open throughout, but note that ALL log output is paused for
-    the duration of this whole operation since it's one single-threaded
-    script (logs resume as soon as the last flash finishes)."""
+def rebuild_and_flash(repo_root: str, stage: str, devices) -> None:
+    """Groups the targeted devices by their (auto-detected) variant, then
+    for each variant: builds once and flashes every device of that variant
+    in turn. Each device's serial connection is closed right before its
+    flash and reopened right after -- other devices not being flashed keep
+    their connections open throughout, but note that ALL log output is
+    paused for the duration of this whole operation since it's one
+    single-threaded script (logs resume as soon as the last flash
+    finishes)."""
     build_sh = os.path.join(repo_root, "build.sh")
 
-    print(f"\n{YELLOW}==> Rebuilding '{stage}' for variant '{variant}' (shared by all targeted devices)...{RESET}")
-    build = subprocess.run([build_sh, "--build", stage, "--variant", variant], cwd=repo_root)
-    if build.returncode != 0:
-        print(f"{RED}==> Build failed (exit {build.returncode}). Not flashing; resuming logs.{RESET}\n")
-        return
+    by_variant = {}
+    for d in devices:
+        by_variant.setdefault(d.variant, []).append(d)
 
-    for device in devices:
-        print(f"{YELLOW}==> Flashing '{stage}' to {device.tag()} ({device.port})...{RESET}")
-        device.close()
-        flash = subprocess.run([build_sh, "--flash", stage, "--variant", variant, "--port", device.port], cwd=repo_root)
-        if flash.returncode != 0:
-            print(f"{RED}==> Flash failed for {device.tag()} (exit {flash.returncode}).{RESET}")
-        else:
-            print(f"{GREEN}==> {device.tag()} reflashed.{RESET}")
-        # The board's native/USB peripheral drops off the bus for a moment
-        # during the actual reset; wait for it before moving on.
-        wait_for_port(device.port)
-        time.sleep(0.3)
-        device._open()
+    for variant in sorted(by_variant):
+        group = by_variant[variant]
+        names = ", ".join(d.tag() for d in group)
+        print(f"\n{YELLOW}==> Rebuilding '{stage}' for variant '{variant}' (targets: {names})...{RESET}")
+        build = subprocess.run([build_sh, "--build", stage, "--variant", variant], cwd=repo_root)
+        if build.returncode != 0:
+            print(f"{RED}==> Build failed (exit {build.returncode}). Not flashing variant '{variant}'; resuming logs.{RESET}\n")
+            continue
+
+        for device in group:
+            print(f"{YELLOW}==> Flashing '{stage}' (variant {device.variant}) to {device.tag()} ({device.port})...{RESET}")
+            device.close()
+            flash = subprocess.run([build_sh, "--flash", stage, "--variant", device.variant,
+                                    "--port", device.port], cwd=repo_root)
+            if flash.returncode != 0:
+                print(f"{RED}==> Flash failed for {device.tag()} (exit {flash.returncode}).{RESET}")
+            else:
+                print(f"{GREEN}==> {device.tag()} reflashed.{RESET}")
+            # The board's native/USB peripheral drops off the bus for a moment
+            # during the actual reset; wait for it before moving on.
+            wait_for_port(device.port)
+            time.sleep(0.3)
+            device._open()
 
     print(f"{GREEN}==> All targeted devices done, resuming logs...{RESET}")
     print(f"{YELLOW}    (If a device's logs don't show up below, this board's auto-reset isn't 100% reliable --{RESET}")
     print(f"{YELLOW}     press its physical RESET button once.){RESET}\n")
 
 
-def print_help(devices, stage: str, variant: str, target: int) -> None:
+def print_help(devices, stage: str, target: int) -> None:
     print(f"\n{BOLD}=== Devices ==={RESET}")
     for d in devices:
         status = f"{GREEN}connected{RESET}" if d.connected else f"{RED}disconnected{RESET}"
-        print(f"  {d.tag()} {d.port} [{status}]")
+        origin = "auto-detected" if d.variant_detected else "fallback --variant"
+        print(f"  {d.tag()} {d.port} [{status}]  variant {d.variant} ({origin})")
 
     print(f"\n{BOLD}=== Keys ==={RESET}")
     print("  0        Target ALL devices")
@@ -245,7 +294,8 @@ def print_help(devices, stage: str, variant: str, target: int) -> None:
 
     target_desc = "ALL" if target == 0 else f"device {target}"
     print(f"\n{BOLD}Current target:{RESET} {target_desc}")
-    print(f"{BOLD}Board variant:{RESET} {variant}  (change with --variant 7|7b when starting the monitor)\n")
+    print(f"{BOLD}Board variants:{RESET} auto-detected per device from .board_variants (written on every")
+    print("  successful flash). Boards never flashed from this machine fall back to --variant.\n")
 
 
 def devices_for_target(devices, target: int):
@@ -266,8 +316,13 @@ def main() -> int:
     ap.add_argument("--stage", default="app", choices=["factory", "app"],
                      help="Which firmware project 'r'/'b' build/reflash")
     ap.add_argument("--variant", default="7", choices=["7", "7b"],
-                     help="Board hardware variant 'r'/'b' build/reflash with (default: 7). Must match "
-                          "whatever the connected device(s) actually are, or 'r' will flash the wrong config.")
+                     help="FALLBACK board variant for devices not found in the --variant-map "
+                          "registry (default: 7). Devices that were ever flashed via build.sh "
+                          "are auto-detected instead.")
+    ap.add_argument("--variant-map", default=None,
+                     help="Path to the .board_variants registry ('<usb-serial> <variant>' per "
+                          "line, maintained by build.sh on every flash) used to auto-detect "
+                          "each connected device's variant.")
     ap.add_argument("--repo-root", required=True, help="Path to the touch-esp32 repo root")
     ap.add_argument("--usbdevs", action="store_true",
                      help="Also auto-detect /dev/ttyUSB* devices (default: /dev/ttyACM* only, "
@@ -281,11 +336,14 @@ def main() -> int:
         print("Plug in a board and make sure your user is in the 'dialout' group (./build.sh --setup).")
         return 1
 
-    devices = [Device(i + 1, port, args.baud) for i, port in enumerate(port_list)]
+    devices = []
+    for i, port in enumerate(port_list):
+        variant, detected = detect_variant(port, args.variant_map, args.variant)
+        devices.append(Device(i + 1, port, args.baud, variant, detected))
     target = 0  # 0 = all devices (the default)
 
     print(f"Watching {len(devices)} device(s) @ {args.baud} baud. Press 'h' for help.\n")
-    print_help(devices, args.stage, args.variant, target)
+    print_help(devices, args.stage, target)
 
     # cbreak mode: read one keystroke at a time with no need to press Enter
     # (like Expo Go's "press r to reload"), while still letting Ctrl+C raise
@@ -316,7 +374,7 @@ def main() -> int:
                     ch = sys.stdin.read(1)
 
                     if ch == "h":
-                        print_help(devices, args.stage, args.variant, target)
+                        print_help(devices, args.stage, target)
 
                     elif ch.isdigit():
                         n = int(ch)
@@ -332,7 +390,7 @@ def main() -> int:
                                   f"Target unchanged.{RESET}\n")
 
                     elif ch.lower() == "b":
-                        build_only(args.repo_root, args.stage, args.variant)
+                        build_only(args.repo_root, args.stage, devices)
 
                     elif ch.lower() == "w":
                         build_web(args.repo_root)
@@ -348,7 +406,7 @@ def main() -> int:
                         if not targeted:
                             print(f"\n{RED}==> No devices match the current target; nothing to flash.{RESET}\n")
                         else:
-                            rebuild_and_flash(args.repo_root, stage_for_key, args.variant, targeted)
+                            rebuild_and_flash(args.repo_root, stage_for_key, targeted)
 
                 else:
                     device = ser_to_device[r]

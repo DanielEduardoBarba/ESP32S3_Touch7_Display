@@ -35,8 +35,16 @@ void checkRecoveryButtonAtBoot();
  * crash is the self-test; extend with deeper checks here if the product
  * ever needs them (e.g. sensor sanity, heap headroom).
  *
- * No-op when the running image isn't pending verification (normal reboots
- * of an already-validated image, or dev images flashed over serial).
+ * Besides committing a pending OTA image (cancelling rollback), this also
+ * points otadata back at the FACTORY partition, so the NEXT reset runs the
+ * factory splash stage first:
+ *
+ *   ROM -> bootloader -> factory [splash, 3s; triple-tap = slot menu]
+ *       -> bootloader -> app (the slot factory selected)
+ *
+ * The handoff only happens AFTER the running image proved healthy, so a
+ * corrupted/crashing app never gets to redirect the boot chain -- the
+ * stock rollback (or the factory fallback) still catches it.
  */
 void commitRunningImageIfPending();
 

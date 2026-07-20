@@ -18,6 +18,17 @@ set(SDKCONFIG_DEFAULTS "../common/sdkconfig.defaults;../common/sdkconfig.default
 # "7b" variant (see firmware/common/sdkconfig.defaults.7b); inert otherwise.
 include_directories(${CMAKE_CURRENT_LIST_DIR}/main/conf)
 
+# Stamp the app image with APP_VERSION (from main/app_config.h) as its
+# embedded project version (esp_app_desc_t.version). The factory recovery
+# menu reads this straight out of each OTA slot's flash to show which
+# version is loaded where, and the Update scene / peer sync use it too.
+file(READ "${CMAKE_CURRENT_LIST_DIR}/main/app_config.h" _app_config_h)
+string(REGEX MATCH "#define APP_VERSION[ \t]+\"([^\"]+)\"" _ "${_app_config_h}")
+if(CMAKE_MATCH_1)
+    set(PROJECT_VER "${CMAKE_MATCH_1}")
+    message(STATUS "App version (from app_config.h): ${PROJECT_VER}")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(app)
 

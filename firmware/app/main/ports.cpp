@@ -1,11 +1,15 @@
 #include "ports.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "app_config.h"
+#include "comm_protocol.h"
+#include "fw_update.h"
 #include "rs485.h"
 #include "user_store.h"
 
@@ -29,8 +33,27 @@ const char *TAG = "ports";
 constexpr const char *STORE_KEY = "active_port";
 constexpr uint8_t STORE_VERSION = 1;
 
+// user_store record: { baud rate, 4 bytes LE }, schema v1.
+constexpr const char *BAUD_KEY = "peer_baud";
+constexpr uint8_t BAUD_VERSION = 1;
+
+// Every standard rate from slowest to fastest that the RS485 transceiver
+// and UART header are comfortable with.
+const std::vector<uint32_t> s_baud_rates = {
+    4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600,
+};
+
 Transport s_active = Transport::RS485;
+uint32_t s_baud = APP_PEER_BAUD_DEFAULT;
 RxCallback s_rx_cb;
+std::vector<ChangeCallback> s_change_cbs;
+
+void notifyChange()
+{
+    for (const auto &cb : s_change_cbs) {
+        cb();
+    }
+}
 
 /** Fans received bytes from whichever transport produced them into the
  *  single registered sink -- but only when that transport is the active
@@ -51,7 +74,7 @@ namespace can_link {
 // CAN frames carry at most 8 data bytes, so the byte stream is chopped into
 // consecutive 8-byte frames with a fixed identifier; comm_protocol's framing
 // (STX/len/CRC/ETX) reassembles the stream on the far side.
-constexpr uint32_t CAN_MSG_ID = 0x100;
+constexpr uint32_t CAN_MSG_ID = APP_CAN_MSG_ID;
 
 void enableTransceiver()
 {
@@ -113,7 +136,7 @@ namespace i2c_link {
 // Master-write-only link: each board writes frames at the peer's fixed
 // address. Half-duplex by design; comm_protocol's request/response pattern
 // keeps the two ends from talking over each other.
-constexpr uint8_t PEER_ADDR = 0x42;
+constexpr uint8_t PEER_ADDR = APP_I2C_PEER_ADDR;
 
 void init()
 {
@@ -153,7 +176,7 @@ void rxTask(void *)
 void init()
 {
     uart_config_t cfg = {};
-    cfg.baud_rate = 115200;
+    cfg.baud_rate = APP_PEER_BAUD_DEFAULT;
     cfg.data_bits = UART_DATA_8_BITS;
     cfg.parity = UART_PARITY_DISABLE;
     cfg.stop_bits = UART_STOP_BITS_1;
@@ -195,6 +218,17 @@ bool isEnabled(Transport t)
     return false;
 }
 
+/** Applies a baud rate to whichever serial links are compiled in. */
+void applyBaud(uint32_t baud)
+{
+#if PORTS_ENABLE_RS485
+    rs485::setBaud(baud);
+#endif
+#if PORTS_ENABLE_UART
+    uart_set_baudrate(uart_link::PORT, baud);
+#endif
+}
+
 } // namespace
 
 void init()
@@ -227,6 +261,35 @@ void init()
         s_active = Transport::RS485;
     }
     ESP_LOGI(TAG, "Active transport: %s", name(s_active));
+
+    // Restore the persisted baud rate (if it's still a supported one).
+    uint8_t baud_version = 0;
+    uint32_t stored_baud = 0;
+    size_t baud_len = 0;
+    if (user_store::get(BAUD_KEY, &baud_version, &stored_baud, sizeof(stored_baud), &baud_len) &&
+        baud_version == BAUD_VERSION && baud_len == sizeof(stored_baud) &&
+        std::find(s_baud_rates.begin(), s_baud_rates.end(), stored_baud) != s_baud_rates.end()) {
+        s_baud = stored_baud;
+        ESP_LOGI(TAG, "Restored saved baud rate %lu from NVS", (unsigned long)s_baud);
+    } else {
+        ESP_LOGI(TAG, "No saved baud rate in NVS -- using default %d", APP_PEER_BAUD_DEFAULT);
+    }
+    if (s_baud != APP_PEER_BAUD_DEFAULT) {
+        applyBaud(s_baud);
+    }
+    ESP_LOGI(TAG, "Peer link baud rate: %lu", (unsigned long)s_baud);
+
+    // Follow a peer's "switch baud NOW" broadcast (without re-broadcasting,
+    // which would ping-pong forever).
+    comm_protocol::onBaudChangeReceived([](uint32_t baud) {
+        ESP_LOGI(TAG, "Peer requested baud switch to %lu", (unsigned long)baud);
+        setBaud(baud, /*announce=*/false);
+    });
+
+    // The GUI is built BEFORE this init runs (it registers an onChange
+    // observer at build time) -- fire it now so every view picks up the
+    // restored transport + baud instead of showing compile-time defaults.
+    notifyChange();
 }
 
 const std::vector<TransportInfo> &transports()
@@ -255,10 +318,85 @@ bool setActive(Transport t)
         ESP_LOGW(TAG, "Transport '%s' is not enabled in ports_config.h", name(t));
         return false;
     }
+    if (changeLocked()) {
+        ESP_LOGW(TAG, "Transport change refused: firmware update transfer in progress");
+        return false;
+    }
     s_active = t;
-    user_store::putU8(STORE_KEY, STORE_VERSION, static_cast<uint8_t>(t));
+    if (!user_store::putU8(STORE_KEY, STORE_VERSION, static_cast<uint8_t>(t))) {
+        ESP_LOGE(TAG, "FAILED to persist transport selection to NVS -- it will NOT survive a reboot");
+    }
     ESP_LOGI(TAG, "Active transport switched to %s", name(t));
+    notifyChange();
     return true;
+}
+
+const std::vector<uint32_t> &baudRates()
+{
+    return s_baud_rates;
+}
+
+uint32_t baud()
+{
+    return s_baud;
+}
+
+bool setBaud(uint32_t baud, bool announce)
+{
+    if (std::find(s_baud_rates.begin(), s_baud_rates.end(), baud) == s_baud_rates.end()) {
+        ESP_LOGW(TAG, "Unsupported baud rate %lu", (unsigned long)baud);
+        return false;
+    }
+    if (changeLocked()) {
+        ESP_LOGW(TAG, "Baud change refused: firmware update transfer in progress");
+        return false;
+    }
+    if (baud == s_baud) {
+        // Already there -- also makes the peer's reaction to our second
+        // callout (below) a harmless no-op instead of an echo loop.
+        return true;
+    }
+    if (announce) {
+        // Callout #1 AT THE CURRENT RATE: peers still on the old baud take
+        // this as a command (like the toggle frames) and switch immediately.
+        ESP_LOGI(TAG, "Baud switch: calling out %lu -> %lu at the current rate",
+                 (unsigned long)s_baud, (unsigned long)baud);
+        comm_protocol::sendBaudChange(baud);
+        vTaskDelay(pdMS_TO_TICKS(100)); // let the frame drain before retuning
+    }
+    s_baud = baud;
+    applyBaud(baud);
+    // Remembered as a user setting -- restored on every boot (see init()).
+    if (!user_store::put(BAUD_KEY, BAUD_VERSION, &baud, sizeof(baud))) {
+        ESP_LOGE(TAG, "FAILED to persist baud rate to NVS -- it will NOT survive a reboot");
+    } else {
+        ESP_LOGI(TAG, "Baud rate %lu saved to NVS (user setting, survives reboot)",
+                 (unsigned long)baud);
+    }
+    if (announce) {
+        // Callout #2 AT THE NEW RATE: catches any peer that was already on
+        // the target baud (or missed the first frame) so everyone converges.
+        vTaskDelay(pdMS_TO_TICKS(50));
+        comm_protocol::sendBaudChange(baud);
+        ESP_LOGI(TAG, "Baud switch complete: now at %lu (callout repeated at new rate)",
+                 (unsigned long)baud);
+    } else {
+        ESP_LOGI(TAG, "Baud rate switched to %lu (following peer's callout)",
+                 (unsigned long)baud);
+    }
+    notifyChange();
+    return true;
+}
+
+bool changeLocked()
+{
+    fw_update::State st = fw_update::status().state;
+    return st == fw_update::State::Sending || st == fw_update::State::Receiving;
+}
+
+void onChange(ChangeCallback cb)
+{
+    s_change_cbs.push_back(std::move(cb));
 }
 
 void send(const uint8_t *data, size_t len)

@@ -6,6 +6,8 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 namespace boot_health {
 namespace {
@@ -22,6 +24,60 @@ constexpr gpio_num_t RECOVERY_BUTTON_GPIO = GPIO_NUM_0;
 // the button after releasing RESET.
 constexpr int HOLD_MS = 500;
 constexpr int POLL_MS = 50;
+
+// One-shot "open the recovery MENU directly (skip the factory splash)"
+// flag, plus a "last running OTA slot" hint, both consumed by
+// firmware/factory/main/main.cpp. NVS is only a UI/auto-boot HINT here --
+// the boot decision itself still lives in otadata alone. The hint matters
+// because selecting the factory partition (forced recovery) ERASES otadata,
+// losing the record of which slot was active.
+constexpr const char *RECOVERY_NVS_NAMESPACE = "recovery";
+constexpr const char *RECOVERY_NVS_KEY = "menu";
+constexpr const char *LAST_SLOT_NVS_KEY = "last_slot";
+
+void setRecoveryMenuFlag()
+{
+    nvs_handle_t handle;
+    if (nvs_open(RECOVERY_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_u8(handle, RECOVERY_NVS_KEY, 1);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+/** Remembers which OTA slot this (working) app runs from, so the factory
+ *  stage can auto-boot the right slot even after otadata was erased. */
+void recordRunningSlot()
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+        running->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1) {
+        return;
+    }
+    nvs_handle_t handle;
+    if (nvs_open(RECOVERY_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_u8(handle, LAST_SLOT_NVS_KEY, static_cast<uint8_t>(running->subtype));
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+/** Points otadata at the factory partition and restarts. Returns only on
+ *  failure. */
+void bootFactory()
+{
+    const esp_partition_t *factory = esp_partition_find_first(
+                                          ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+    if (factory == nullptr) {
+        ESP_LOGE(TAG, "No factory partition found");
+        return;
+    }
+    if (esp_ota_set_boot_partition(factory) != ESP_OK) {
+        ESP_LOGE(TAG, "Could not select factory partition");
+        return;
+    }
+    esp_restart();
+}
 
 } // namespace
 
@@ -46,33 +102,26 @@ void checkRecoveryButtonAtBoot()
     }
 
     ESP_LOGW(TAG, "BOOT button held -- rebooting into the factory/recovery app");
-    const esp_partition_t *factory = esp_partition_find_first(
-                                          ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
-    if (factory == nullptr) {
-        ESP_LOGE(TAG, "No factory partition found; continuing normal boot");
-        gpio_reset_pin(RECOVERY_BUTTON_GPIO);
-        return;
-    }
-    if (esp_ota_set_boot_partition(factory) != ESP_OK) {
-        ESP_LOGE(TAG, "Could not select factory partition; continuing normal boot");
-        gpio_reset_pin(RECOVERY_BUTTON_GPIO);
-        return;
-    }
-    esp_restart();
+    setRecoveryMenuFlag(); // land in the MENU, not the factory splash
+    bootFactory();
+    // Only reached if factory selection failed:
+    gpio_reset_pin(RECOVERY_BUTTON_GPIO);
 }
 
 void commitRunningImageIfPending()
 {
+    // This runs once every critical subsystem is up -- the app is healthy,
+    // so leave the breadcrumb the factory stage uses to pick the right
+    // slot after otadata erasure (regardless of OTA state tracking).
+    recordRunningSlot();
+
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t state;
     if (esp_ota_get_state_partition(running, &state) != ESP_OK) {
         // Typical for images flashed over serial during development (no OTA
         // state entry exists) -- nothing to commit.
         ESP_LOGI(TAG, "Running from '%s' (no OTA state tracked)", running->label);
-        return;
-    }
-
-    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+    } else if (state == ESP_OTA_IMG_PENDING_VERIFY) {
         // We made it through full subsystem bring-up without crashing:
         // that's the self-test. Locking the image in prevents the
         // bootloader from rolling back on the next reset.
@@ -85,6 +134,21 @@ void commitRunningImageIfPending()
         }
     } else {
         ESP_LOGI(TAG, "Running from '%s' (state %d, already validated)", running->label, (int)state);
+    }
+
+    // Healthy and committed: hand the NEXT reset to the factory splash
+    // stage (ROM -> bootloader -> factory -> app). Done LAST, only after
+    // the image proved itself -- a crashing app never reaches this, so the
+    // stock rollback path stays fully intact for bad updates.
+    // NOTE: a device-to-device / web OTA armed later simply overwrites this
+    // selection with the new slot -- that new image then boots (and
+    // verifies) directly, and re-arms factory itself once healthy.
+    const esp_partition_t *factory = esp_partition_find_first(
+                                          ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+    if (factory != nullptr && esp_ota_set_boot_partition(factory) == ESP_OK) {
+        ESP_LOGI(TAG, "Next reset will run the factory splash stage first");
+    } else {
+        ESP_LOGE(TAG, "Could not arm the factory stage for the next boot");
     }
 }
 

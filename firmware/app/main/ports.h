@@ -39,6 +39,7 @@ struct TransportInfo {
 };
 
 using RxCallback = std::function<void(const uint8_t *data, size_t len)>;
+using ChangeCallback = std::function<void()>;
 
 /** Initializes every ENABLED transport and activates the persisted (or
  *  default RS485) selection. Call once at startup, before comm_protocol. */
@@ -51,8 +52,34 @@ Transport active();
 const char *name(Transport t);
 
 /** Switches the active transport (must be an enabled one; returns false
- *  otherwise). Persists the choice for future boots. */
+ *  otherwise, or while a firmware transfer is running). Persists the
+ *  choice for future boots. */
 bool setActive(Transport t);
+
+/** Supported baud rates for the serial links (RS485/UART), slowest first. */
+const std::vector<uint32_t> &baudRates();
+
+/** Currently active baud rate. */
+uint32_t baud();
+
+/**
+ * Switches the serial baud rate. With `announce` (the default), a
+ * CMD_BAUD_SET broadcast goes out at the CURRENT rate first so every peer
+ * switches in sync; the RX path passes announce=false to follow a peer's
+ * broadcast without re-broadcasting. Persisted across reboots. Returns
+ * false for unknown rates or while a firmware transfer is running.
+ */
+bool setBaud(uint32_t baud, bool announce = true);
+
+/** True while a firmware update transfer is in flight -- transport and
+ *  baud changes are refused so the link can't be yanked mid-update. */
+bool changeLocked();
+
+/** GUI hook: fired after the active transport or baud rate changes from
+ *  ANY source (local GUI, web API, or a peer's baud broadcast), so every
+ *  view stays in sync. May fire from the RX task -- GUI layers must lock
+ *  LVGL themselves. Can be called multiple times to add observers. */
+void onChange(ChangeCallback cb);
 
 /** Sends raw bytes over the ACTIVE transport. */
 void send(const uint8_t *data, size_t len);

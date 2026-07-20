@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DebugPanel } from './components/DebugPanel'
 import { Header } from './components/Header'
 import { MachinePanel } from './components/MachinePanel'
 import { NetworkPanel } from './components/NetworkPanel'
@@ -8,7 +9,7 @@ import { api, type StatusResponse } from './lib/api'
 
 // Mirrors the scenes on the device's own touchscreen (see
 // firmware/app/main/ui/ui_scene_manager.h): "Machine" is the default view.
-type Scene = 'machine' | 'network' | 'ports' | 'update'
+type Scene = 'machine' | 'network' | 'ports' | 'update' | 'debug'
 
 function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null)
@@ -38,7 +39,7 @@ function App() {
       <Header status={status} />
 
       <nav className="mx-auto flex w-full max-w-4xl gap-2 px-6 pt-4">
-        {(['machine', 'network', 'ports', 'update'] as const).map((s) => (
+        {(['machine', 'network', 'ports', 'update', 'debug'] as const).map((s) => (
           <button
             key={s}
             onClick={() => setScene(s)}
@@ -56,6 +57,7 @@ function App() {
         {scene === 'network' && <NetworkPanel status={status} />}
         {scene === 'ports' && <PortsPanel />}
         {scene === 'update' && <UpdatePanel />}
+        {scene === 'debug' && <DebugPanel />}
       </main>
 
       <footer className="px-6 pb-4 text-center text-xs text-gray-600">

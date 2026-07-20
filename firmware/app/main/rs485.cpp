@@ -5,6 +5,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "app_config.h"
+
 namespace rs485 {
 namespace {
 
@@ -21,11 +23,10 @@ const char *TAG = "rs485";
 constexpr uart_port_t RS485_UART = UART_NUM_1;
 constexpr int RS485_TX_GPIO = 16;
 constexpr int RS485_RX_GPIO = 15;
-// Same rate as Waveshare's own RS485 demos for these boards. The "Machine
-// sync" packet protocol (see rs485_protocol.h) only sends a handful of
-// bytes per user action, so throughput is irrelevant -- reliability wins.
-// (Both ends of the bus must always use the same baud rate.)
-constexpr int RS485_BAUD_RATE = 115200;
+// Startup rate; the Ports scene can change it at runtime via setBaud()
+// (coordinated across both boards by ports::setBaud). Both ends of the bus
+// must always use the same rate.
+constexpr int RS485_BAUD_RATE = APP_PEER_BAUD_DEFAULT;
 constexpr int RS485_RX_BUF_SIZE = 512;
 
 RxCallback s_rx_cb;
@@ -80,6 +81,13 @@ void send(const std::string &text)
 void onReceive(RxCallback cb)
 {
     s_rx_cb = std::move(cb);
+}
+
+void setBaud(uint32_t baud)
+{
+    uart_wait_tx_done(RS485_UART, pdMS_TO_TICKS(500)); // drain at the old rate first
+    uart_set_baudrate(RS485_UART, baud);
+    ESP_LOGI(TAG, "RS485 baud rate changed to %lu", (unsigned long)baud);
 }
 
 } // namespace rs485

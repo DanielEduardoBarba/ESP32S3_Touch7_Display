@@ -5,23 +5,34 @@
  * Boot flow (all standard ESP-IDF -- ROM bootloader -> stock 2nd-stage
  * bootloader -> otadata slot selection -> this app or an OTA slot):
  *
- *   - Fresh flash / factory reset: otadata is empty, so the bootloader runs
- *     this app. It shows a short countdown and then boots the main app
- *     automatically -- no user interaction needed for normal bring-up.
+ *   - EVERY normal boot: the app, once it proves healthy, points otadata
+ *     back HERE (see firmware/app/main/boot_health.cpp), so each reset runs
  *
- *   - Forced recovery: holding the BOOT button while the MAIN app starts
- *     makes it reboot into this app (see firmware/app/main/boot_health.cpp).
- *     Tapping the screen during the countdown stops it and keeps the
- *     recovery menu open.
+ *       ROM -> bootloader -> factory [splash, APP_SPLASH_SECONDS;
+ *                                     triple-tap = recovery menu]
+ *           -> bootloader -> app (the slot picked by pick_auto_boot_target)
+ *
+ *     A corrupted/crashing app never reaches the handoff code, so it can
+ *     never redirect the chain -- stock rollback / the factory fallback
+ *     still catch it.
+ *
+ *   - Fresh flash / factory reset: otadata is empty, so the bootloader runs
+ *     this app directly; same splash -> auto-boot behavior.
+ *
+ *   - Entering the recovery menu: tap the splash's logo/text
+ *     APP_SPLASH_TAPS_FOR_MENU times (rapidly) during the splash. (NOTE:
+ *     holding BOOT at POWER-ON is taken by Espressif's ROM download mode
+ *     and never reaches this app -- but holding BOOT while the MAIN app
+ *     starts still reboots into here, see firmware/app/main/boot_health.cpp.)
  *
  *   - Automatic recovery: with CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, an
  *     OTA image that crashes before validating itself is rolled back by the
  *     stock bootloader; if no valid OTA slot remains at all, the bootloader
- *     falls back here.
+ *     falls back here (and with nothing bootable the menu opens directly).
  *
  * Recovery abilities (deliberately minimal -- reliability logic lives in
  * the main app, and this stage should almost never need to change):
- *   - Boot either OTA slot manually.
+ *   - Point otadata at EITHER OTA slot and boot straight into it.
  *   - Erase NVS (clears WiFi credentials / settings -- "restore defaults").
  *     Note the boot decision itself never involves NVS; only otadata does.
  *   - Show both slots' state so field debugging doesn't need a serial cable.
@@ -41,6 +52,10 @@
 #include "lvgl.h"
 #include "lvgl_v8_port.h"
 
+// Shared app-level config: splash colors/text/timing live with the rest of
+// the product's tunables so branding is changed in ONE place.
+#include "../../app/main/app_config.h"
+
 using namespace esp_panel::drivers;
 using namespace esp_panel::board;
 
@@ -54,6 +69,7 @@ struct SlotInfo {
     const esp_partition_t *partition = nullptr;
     bool has_image = false;              // partition starts with a valid app image magic
     esp_ota_img_states_t ota_state = ESP_OTA_IMG_UNDEFINED;
+    char version[34] = "";               // embedded app version ("?" when unreadable)
 };
 
 /** True if the slot both contains an app image and hasn't been marked
@@ -83,6 +99,16 @@ static SlotInfo inspect_slot(esp_partition_subtype_t subtype)
     // May fail for slots with no otadata entry (e.g. dev images flashed
     // over serial) -- treat that as "no state recorded", which is fine.
     esp_ota_get_state_partition(info.partition, &info.ota_state);
+
+    // The version stamped into the image's app descriptor (PROJECT_VER =
+    // APP_VERSION from app_config.h) -- shows WHICH build lives in the slot.
+    esp_app_desc_t desc;
+    if (info.has_image &&
+        esp_ota_get_partition_description(info.partition, &desc) == ESP_OK) {
+        snprintf(info.version, sizeof(info.version), "v%s", desc.version);
+    } else if (info.has_image) {
+        snprintf(info.version, sizeof(info.version), "v?");
+    }
     return info;
 }
 
@@ -140,56 +166,161 @@ static void boot_partition(const esp_partition_t *part)
 // UI
 // -------------------------------------------------------------------------
 
-// Auto-boot countdown, driven by an LVGL timer. Any touch on the screen
-// cancels it (leaving the recovery menu open), covering the "I forced
-// recovery on purpose, don't boot past it" case without needing any state
-// shared with the main app.
-static constexpr int AUTO_BOOT_SECONDS = 5;
-static int s_countdown_remaining = AUTO_BOOT_SECONDS;
-static lv_timer_t *s_countdown_timer = nullptr;
-static lv_obj_t *s_countdown_label = nullptr;
+// Splash flow: show the brand (color/text/logo from app_config.h) for
+// APP_SPLASH_SECONDS with NO text about what's happening, then silently
+// boot the main app. Tapping the logo/text APP_SPLASH_TAPS_FOR_MENU times
+// during the splash opens the recovery menu instead.
+static lv_timer_t *s_splash_timer = nullptr;
+static int s_splash_taps = 0;
 static const esp_partition_t *s_auto_boot_target = nullptr;
+static SlotInfo s_slot_a, s_slot_b;
 
-static void cancel_countdown()
+static void build_recovery_ui(const SlotInfo &slot_a, const SlotInfo &slot_b);
+
+static void cancel_splash_timer()
 {
-    if (s_countdown_timer != nullptr) {
-        lv_timer_del(s_countdown_timer);
-        s_countdown_timer = nullptr;
-    }
-    if (s_countdown_label != nullptr) {
-        lv_label_set_text(s_countdown_label, "Auto-boot cancelled -- recovery menu active");
+    if (s_splash_timer != nullptr) {
+        lv_timer_del(s_splash_timer);
+        s_splash_timer = nullptr;
     }
 }
 
-static void countdown_tick_cb(lv_timer_t *timer)
+static void splash_timeout_cb(lv_timer_t *timer)
 {
-    s_countdown_remaining--;
-    if (s_countdown_remaining <= 0) {
-        lv_timer_del(s_countdown_timer);
-        s_countdown_timer = nullptr;
+    cancel_splash_timer();
+    if (s_auto_boot_target != nullptr) {
         boot_partition(s_auto_boot_target);
         return;
     }
-    lv_label_set_text_fmt(s_countdown_label,
-                          "Booting main app in %d s -- tap anywhere for recovery menu",
-                          s_countdown_remaining);
+    // Nothing bootable -- fall through to the menu so the slot rows can
+    // explain what's wrong.
+    ESP_LOGW(TAG, "No bootable OTA slot -- opening the recovery menu");
+    lv_obj_clean(lv_scr_act());
+    build_recovery_ui(s_slot_a, s_slot_b);
 }
 
-static void screen_touched_cb(lv_event_t *e)
+static void splash_logo_tapped_cb(lv_event_t *e)
 {
-    cancel_countdown();
+    s_splash_taps++;
+    ESP_LOGI(TAG, "Splash tap %d/%d", s_splash_taps, APP_SPLASH_TAPS_FOR_MENU);
+    if (s_splash_taps >= APP_SPLASH_TAPS_FOR_MENU) {
+        cancel_splash_timer();
+        lv_obj_clean(lv_scr_act());
+        build_recovery_ui(s_slot_a, s_slot_b);
+    }
+}
+
+#if APP_SPLASH_SHOW_LOGO
+// When APP_SPLASH_SHOW_LOGO is 1, link an LVGL image descriptor with this
+// name into the factory stage (e.g. generated by LVGL's image converter).
+extern "C" const lv_img_dsc_t APP_SPLASH_LOGO_IMG;
+#endif
+
+/** The "last running OTA slot" breadcrumb the main app records in NVS
+ *  (see firmware/app/main/boot_health.cpp). Needed because selecting the
+ *  factory partition (forced recovery) ERASES otadata -- this is how the
+ *  auto-boot still returns to the slot that was actually active. Returns
+ *  the partition subtype value, or 0 when no hint exists. */
+static uint8_t read_last_slot_hint()
+{
+    nvs_handle_t handle;
+    if (nvs_open("recovery", NVS_READONLY, &handle) != ESP_OK) {
+        return 0;
+    }
+    uint8_t value = 0;
+    nvs_get_u8(handle, "last_slot", &value);
+    nvs_close(handle);
+    return value;
+}
+
+/** Auto-boot target, in order of trust:
+ *    1. The slot otadata says is ACTIVE (the normal case).
+ *    2. The app's last-running-slot NVS breadcrumb (otadata was erased).
+ *    3. Slot A, then slot B (fresh flash: no history at all).
+ *  Only bootable slots are considered; nullptr when nothing qualifies. */
+static const esp_partition_t *pick_auto_boot_target()
+{
+    const esp_partition_t *configured = esp_ota_get_boot_partition();
+    if (configured != nullptr) {
+        if (s_slot_a.partition == configured && slot_bootable(s_slot_a)) {
+            ESP_LOGI(TAG, "Auto-boot target: ota_0 (active per otadata)");
+            return s_slot_a.partition;
+        }
+        if (s_slot_b.partition == configured && slot_bootable(s_slot_b)) {
+            ESP_LOGI(TAG, "Auto-boot target: ota_1 (active per otadata)");
+            return s_slot_b.partition;
+        }
+    }
+
+    uint8_t hint = read_last_slot_hint();
+    if (hint == ESP_PARTITION_SUBTYPE_APP_OTA_0 && slot_bootable(s_slot_a)) {
+        ESP_LOGI(TAG, "Auto-boot target: ota_0 (last-running-slot hint)");
+        return s_slot_a.partition;
+    }
+    if (hint == ESP_PARTITION_SUBTYPE_APP_OTA_1 && slot_bootable(s_slot_b)) {
+        ESP_LOGI(TAG, "Auto-boot target: ota_1 (last-running-slot hint)");
+        return s_slot_b.partition;
+    }
+
+    if (slot_bootable(s_slot_a)) {
+        ESP_LOGI(TAG, "Auto-boot target: ota_0 (default preference)");
+        return s_slot_a.partition;
+    }
+    if (slot_bootable(s_slot_b)) {
+        ESP_LOGI(TAG, "Auto-boot target: ota_1 (default preference)");
+        return s_slot_b.partition;
+    }
+    return nullptr;
+}
+
+static void build_splash_ui()
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(APP_SPLASH_BG_COLOR), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Generous invisible tap target around the brand mark, so the triple
+    // tap doesn't demand pixel accuracy.
+    lv_obj_t *tap_area = lv_obj_create(scr);
+    lv_obj_set_size(tap_area, 360, 220);
+    lv_obj_center(tap_area);
+    lv_obj_set_style_bg_opa(tap_area, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tap_area, 0, 0);
+    lv_obj_clear_flag(tap_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tap_area, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(tap_area, splash_logo_tapped_cb, LV_EVENT_CLICKED, nullptr);
+
+#if APP_SPLASH_SHOW_LOGO
+    lv_obj_t *logo = lv_img_create(tap_area);
+    lv_img_set_src(logo, &APP_SPLASH_LOGO_IMG);
+    lv_obj_center(logo);
+#else
+    lv_obj_t *text = lv_label_create(tap_area);
+    lv_label_set_text(text, APP_SPLASH_TEXT);
+    lv_obj_set_style_text_font(text, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(text, lv_color_hex(APP_SPLASH_TEXT_COLOR), 0);
+    lv_obj_center(text);
+#endif
+
+    // Prefer whatever otadata already points at; fall back to the app's
+    // last-running-slot breadcrumb, then slot A/B (see pick_auto_boot_target).
+    s_auto_boot_target = pick_auto_boot_target();
+
+    s_splash_timer = lv_timer_create(splash_timeout_cb, APP_SPLASH_SECONDS * 1000, nullptr);
 }
 
 static void boot_slot_btn_cb(lv_event_t *e)
 {
-    cancel_countdown();
+    // "Point otadata at this slot and go": boot_partition() writes the
+    // boot selector (esp_ota_set_boot_partition) and restarts, so this is
+    // both "switch which OTA is active" AND "enter it" in one press.
     auto *part = static_cast<const esp_partition_t *>(lv_event_get_user_data(e));
     boot_partition(part);
 }
 
 static void erase_nvs_btn_cb(lv_event_t *e)
 {
-    cancel_countdown();
     ESP_LOGW(TAG, "Erasing NVS (settings / WiFi credentials)");
     esp_err_t err = nvs_flash_erase();
     set_status(err == ESP_OK ? "Settings erased (WiFi credentials cleared)"
@@ -210,7 +341,11 @@ static void add_slot_row(lv_obj_t *parent, const char *name, const SlotInfo &slo
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label = lv_label_create(row);
-    lv_label_set_text_fmt(label, "%s: %s", name, slot_state_text(slot));
+    if (slot.version[0] != '\0') {
+        lv_label_set_text_fmt(label, "%s: %s  --  %s", name, slot.version, slot_state_text(slot));
+    } else {
+        lv_label_set_text_fmt(label, "%s: %s", name, slot_state_text(slot));
+    }
     lv_obj_set_style_text_color(label, lv_color_hex(0x9aa4b2), 0);
 
     if (slot_bootable(slot)) {
@@ -229,10 +364,6 @@ static void build_recovery_ui(const SlotInfo &slot_a, const SlotInfo &slot_b)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x101317), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    // A tap on empty screen space cancels the auto-boot countdown. (LVGL
-    // events don't bubble by default, so the card gets its own handler
-    // below, and every button's callback also cancels it explicitly.)
-    lv_obj_add_event_cb(scr, screen_touched_cb, LV_EVENT_PRESSED, nullptr);
 
     lv_obj_t *title = lv_label_create(scr);
     lv_label_set_text(title, "Recovery");
@@ -255,7 +386,6 @@ static void build_recovery_ui(const SlotInfo &slot_a, const SlotInfo &slot_b)
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(card, screen_touched_cb, LV_EVENT_PRESSED, nullptr);
 
     add_slot_row(card, "Slot A (ota_0)", slot_a);
     add_slot_row(card, "Slot B (ota_1)", slot_b);
@@ -270,39 +400,42 @@ static void build_recovery_ui(const SlotInfo &slot_a, const SlotInfo &slot_b)
     lv_label_set_text(erase_label, "Erase settings (WiFi etc.)");
     lv_obj_center(erase_label);
 
-    // --- Countdown / status ---------------------------------------------
-    s_countdown_label = lv_label_create(scr);
-    lv_obj_set_style_text_color(s_countdown_label, lv_color_hex(0xf0a500), 0);
-    lv_obj_align(s_countdown_label, LV_ALIGN_BOTTOM_MID, 0, -46);
-
+    // --- Status ----------------------------------------------------------
     s_status_label = lv_label_create(scr);
-    lv_label_set_text(s_status_label, "");
+    lv_label_set_text(s_status_label,
+                      "Booting a slot points otadata at it -- the device enters that app now\n"
+                      "and keeps booting it until changed again.");
     lv_obj_set_style_text_color(s_status_label, lv_color_hex(0xf0a500), 0);
+    lv_obj_set_style_text_align(s_status_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_status_label, LV_ALIGN_BOTTOM_MID, 0, -16);
-
-    // Prefer slot A; fall back to slot B. If neither is bootable, stay in
-    // the menu -- the countdown never starts and the slot rows explain why.
-    if (slot_bootable(slot_a)) {
-        s_auto_boot_target = slot_a.partition;
-    } else if (slot_bootable(slot_b)) {
-        s_auto_boot_target = slot_b.partition;
-    }
-
-    if (s_auto_boot_target != nullptr) {
-        s_countdown_remaining = AUTO_BOOT_SECONDS;
-        lv_label_set_text_fmt(s_countdown_label,
-                              "Booting main app in %d s -- tap anywhere for recovery menu",
-                              s_countdown_remaining);
-        s_countdown_timer = lv_timer_create(countdown_tick_cb, 1000, nullptr);
-    } else {
-        lv_label_set_text(s_countdown_label,
-                           "No bootable application found -- flash one over USB");
-    }
 }
 
 // -------------------------------------------------------------------------
 // Board bring-up
 // -------------------------------------------------------------------------
+
+/** One-shot flag left by the app's splash triple-tap / BOOT-button flow
+ *  (see firmware/app/main/boot_health.cpp): when set, skip the factory
+ *  splash and open the recovery MENU directly. */
+static bool consume_recovery_menu_flag()
+{
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES && err != ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        return false;
+    }
+    nvs_handle_t handle;
+    if (nvs_open("recovery", NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+    uint8_t value = 0;
+    bool set = nvs_get_u8(handle, "menu", &value) == ESP_OK && value != 0;
+    if (set) {
+        nvs_erase_key(handle, "menu");
+        nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return set;
+}
 
 // board->begin() toggles the LCD backlight/reset lines over I2C, which
 // briefly spikes current draw. On a marginal 5V supply (e.g. a weak USB-A
@@ -330,21 +463,40 @@ extern "C" void app_main(void)
 
     // Inspect the OTA slots before any UI exists, so their state can be
     // shown even if the display bring-up ends up being the broken part.
-    SlotInfo slot_a = inspect_slot(ESP_PARTITION_SUBTYPE_APP_OTA_0);
-    SlotInfo slot_b = inspect_slot(ESP_PARTITION_SUBTYPE_APP_OTA_1);
-    ESP_LOGI(TAG, "Slot A (ota_0): %s", slot_state_text(slot_a));
-    ESP_LOGI(TAG, "Slot B (ota_1): %s", slot_state_text(slot_b));
+    s_slot_a = inspect_slot(ESP_PARTITION_SUBTYPE_APP_OTA_0);
+    s_slot_b = inspect_slot(ESP_PARTITION_SUBTYPE_APP_OTA_1);
+    ESP_LOGI(TAG, "Slot A (ota_0): %s", slot_state_text(s_slot_a));
+    ESP_LOGI(TAG, "Slot B (ota_1): %s", slot_state_text(s_slot_b));
 
     Board *board = new Board();
     board->init();
     assert(begin_board_with_retries(board));
 
+    // Kill the "white flash": the panel shows garbage/white between the
+    // backlight coming up (inside begin()) and the first real LVGL frame.
+    auto *backlight = board->getBacklight();
+    if (backlight != nullptr) {
+        backlight->off();
+    }
+
     ESP_LOGI(TAG, "Initializing LVGL");
     lvgl_port_init(board->getLCD(), board->getTouch());
 
+    // Open the menu directly when the app's BOOT-button flow asked for it;
+    // otherwise show the branded splash and auto-boot.
+    bool menu_requested = consume_recovery_menu_flag();
     lvgl_port_lock(-1);
-    build_recovery_ui(slot_a, slot_b);
+    if (menu_requested) {
+        ESP_LOGI(TAG, "Recovery menu requested by the app -- skipping splash");
+        build_recovery_ui(s_slot_a, s_slot_b);
+    } else {
+        build_splash_ui();
+    }
+    lv_refr_now(nullptr); // first frame is on screen before the backlight returns
     lvgl_port_unlock();
+    if (backlight != nullptr) {
+        backlight->on();
+    }
 
     // All real work happens in the LVGL task started by lvgl_port_init().
     while (true) {

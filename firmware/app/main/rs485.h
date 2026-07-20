@@ -20,4 +20,8 @@ void send(const uint8_t *data, size_t len);
 void send(const std::string &text);
 void onReceive(RxCallback cb);
 
+/** Runtime baud change (drains pending TX first). Both ends of the bus
+ *  must always match -- coordinated by ports::setBaud(). */
+void setBaud(uint32_t baud);
+
 } // namespace rs485
