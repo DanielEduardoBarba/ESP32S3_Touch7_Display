@@ -9,4 +9,8 @@ namespace ui_ports {
 
 lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height);
 
+/** Frees the whole widget tree (scene manager calls this when leaving).
+ *  Transport/baud selections live in ports/NVS, so nothing is lost. */
+void destroy();
+
 } // namespace ui_ports

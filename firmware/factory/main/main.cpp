@@ -55,6 +55,8 @@
 // Shared app-level config: splash colors/text/timing live with the rest of
 // the product's tunables so branding is changed in ONE place.
 #include "../../app/main/app_config.h"
+// Combined FPS/CPU/RAM/PSRAM overlay (dev builds only).
+#include "../../common/dev_monitor.h"
 
 using namespace esp_panel::drivers;
 using namespace esp_panel::board;
@@ -72,9 +74,18 @@ struct SlotInfo {
     char version[34] = "";               // embedded app version ("?" when unreadable)
 };
 
-/** True if the slot both contains an app image and hasn't been marked
- *  bad by a failed OTA validation. */
+/** True if the slot contains an app image at all -- the menu lets the user
+ *  boot ANY image, including one marked INVALID by a rollback (often just a
+ *  reset that happened before the app's self-test committed; see
+ *  boot_partition(), which clears the stale mark first). */
 static bool slot_bootable(const SlotInfo &slot)
+{
+    return slot.has_image;
+}
+
+/** Stricter check for AUTOMATIC booting: never auto-boot a slot the
+ *  rollback machinery flagged -- that's a job for an explicit user choice. */
+static bool slot_auto_bootable(const SlotInfo &slot)
 {
     return slot.has_image &&
            slot.ota_state != ESP_OTA_IMG_INVALID &&
@@ -122,11 +133,16 @@ static const char *slot_state_text(const SlotInfo &slot)
     }
     switch (slot.ota_state) {
     case ESP_OTA_IMG_VALID:          return "valid";
-    case ESP_OTA_IMG_UNDEFINED:      return "present (no OTA state)";
+    // The factory-first boot chain erases otadata on every healthy boot
+    // (arming the factory clears all slot state records), so "no state" is
+    // the NORMAL condition here -- not a problem with the image.
+    case ESP_OTA_IMG_UNDEFINED:      return "present";
     case ESP_OTA_IMG_NEW:            return "new (not yet booted)";
     case ESP_OTA_IMG_PENDING_VERIFY: return "pending verification";
-    case ESP_OTA_IMG_INVALID:        return "INVALID (failed self-test)";
-    case ESP_OTA_IMG_ABORTED:        return "ABORTED (failed self-test)";
+    // Usually just a reset before the app's self-test committed -- booting
+    // it again from here clears the mark and gives it another chance.
+    case ESP_OTA_IMG_INVALID:        return "marked invalid (early reset?) -- boot to retry";
+    case ESP_OTA_IMG_ABORTED:        return "marked aborted -- boot to retry";
     default:                         return "unknown";
     }
 }
@@ -152,6 +168,17 @@ static void set_status(const char *text)
 static void boot_partition(const esp_partition_t *part)
 {
     ESP_LOGI(TAG, "Booting into '%s'...", part->label);
+    // Two-step selection: selecting the FACTORY partition first erases
+    // otadata entirely, which clears any stale INVALID/ABORTED mark left by
+    // a rollback (e.g. a reset before the app's self-test committed).
+    // Selecting the target slot then writes a clean NEW entry, so the
+    // bootloader gives the image a fresh pending-verify boot instead of
+    // refusing it.
+    const esp_partition_t *factory = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+    if (factory != nullptr && part != factory) {
+        esp_ota_set_boot_partition(factory);
+    }
     if (esp_ota_set_boot_partition(part) != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed");
         set_status("Error: could not select boot partition");
@@ -242,31 +269,31 @@ static const esp_partition_t *pick_auto_boot_target()
 {
     const esp_partition_t *configured = esp_ota_get_boot_partition();
     if (configured != nullptr) {
-        if (s_slot_a.partition == configured && slot_bootable(s_slot_a)) {
+        if (s_slot_a.partition == configured && slot_auto_bootable(s_slot_a)) {
             ESP_LOGI(TAG, "Auto-boot target: ota_0 (active per otadata)");
             return s_slot_a.partition;
         }
-        if (s_slot_b.partition == configured && slot_bootable(s_slot_b)) {
+        if (s_slot_b.partition == configured && slot_auto_bootable(s_slot_b)) {
             ESP_LOGI(TAG, "Auto-boot target: ota_1 (active per otadata)");
             return s_slot_b.partition;
         }
     }
 
     uint8_t hint = read_last_slot_hint();
-    if (hint == ESP_PARTITION_SUBTYPE_APP_OTA_0 && slot_bootable(s_slot_a)) {
+    if (hint == ESP_PARTITION_SUBTYPE_APP_OTA_0 && slot_auto_bootable(s_slot_a)) {
         ESP_LOGI(TAG, "Auto-boot target: ota_0 (last-running-slot hint)");
         return s_slot_a.partition;
     }
-    if (hint == ESP_PARTITION_SUBTYPE_APP_OTA_1 && slot_bootable(s_slot_b)) {
+    if (hint == ESP_PARTITION_SUBTYPE_APP_OTA_1 && slot_auto_bootable(s_slot_b)) {
         ESP_LOGI(TAG, "Auto-boot target: ota_1 (last-running-slot hint)");
         return s_slot_b.partition;
     }
 
-    if (slot_bootable(s_slot_a)) {
+    if (slot_auto_bootable(s_slot_a)) {
         ESP_LOGI(TAG, "Auto-boot target: ota_0 (default preference)");
         return s_slot_a.partition;
     }
-    if (slot_bootable(s_slot_b)) {
+    if (slot_auto_bootable(s_slot_b)) {
         ESP_LOGI(TAG, "Auto-boot target: ota_1 (default preference)");
         return s_slot_b.partition;
     }
@@ -492,6 +519,7 @@ extern "C" void app_main(void)
     } else {
         build_splash_ui();
     }
+    dev_monitor::show(); // FPS/CPU/RAM/PSRAM card (dev builds only)
     lv_refr_now(nullptr); // first frame is on screen before the backlight returns
     lvgl_port_unlock();
     if (backlight != nullptr) {

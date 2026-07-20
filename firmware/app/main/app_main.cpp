@@ -17,6 +17,7 @@
  * blocks anything else.
  */
 #include "esp_display_panel.hpp"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -123,7 +124,9 @@ extern "C" void app_main(void)
     // back to the previous working image on the next reset instead.
     boot_health::commitRunningImageIfPending();
 
-    ESP_LOGI(TAG, "Setup complete, entering idle loop");
+    ESP_LOGI(TAG, "Setup complete, entering idle loop (internal heap free: %u, min ever: %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

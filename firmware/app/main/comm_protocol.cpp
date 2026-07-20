@@ -43,16 +43,25 @@ uint8_t crc8(const uint8_t *data, size_t len)
 
 uint16_t crc16(const uint8_t *data, size_t len, uint16_t seed)
 {
-    // CRC16-CCITT (poly 0x1021). Also usable incrementally by passing the
-    // previous result back in as `seed` (fw_update does this for the whole
-    // multi-megabyte image without buffering it).
+    // CRC16-CCITT (poly 0x1021), table-driven: ~8x faster than the bitwise
+    // loop, which matters when fw_update runs it over multi-MB images.
+    // Also usable incrementally by passing the previous result as `seed`.
+    static uint16_t table[256];
+    static bool table_ready = false;
+    if (!table_ready) {
+        for (uint16_t i = 0; i < 256; i++) {
+            uint16_t c = static_cast<uint16_t>(i << 8);
+            for (int b = 0; b < 8; b++) {
+                c = (c & 0x8000) ? static_cast<uint16_t>((c << 1) ^ 0x1021)
+                                  : static_cast<uint16_t>(c << 1);
+            }
+            table[i] = c;
+        }
+        table_ready = true;
+    }
     uint16_t crc = seed;
     for (size_t i = 0; i < len; i++) {
-        crc ^= static_cast<uint16_t>(data[i]) << 8;
-        for (int b = 0; b < 8; b++) {
-            crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
-                                  : static_cast<uint16_t>(crc << 1);
-        }
+        crc = static_cast<uint16_t>((crc << 8) ^ table[(crc >> 8) ^ data[i]]);
     }
     return crc;
 }
@@ -63,11 +72,17 @@ namespace {
 // Hex logging
 // ---------------------------------------------------------------------------
 
-/** Logs a byte run as "0x02 0x01 ..." lines, capped so a 512-byte firmware
- *  chunk doesn't flood the console (the CRC verdict line that follows tells
- *  you whether the rest was intact anyway). */
+/** Logs a byte run as "0x02 0x01 ..." lines at DEBUG level. During a
+ *  firmware transfer a 1-2KB chunk arrives as ~10 UART deliveries -- at
+ *  INFO these hex dumps alone throttled transfers to a fraction of the
+ *  line rate. The frame-summary lines (type/cmd/len/CRC verdict) stay at
+ *  INFO, so the bus remains fully auditable; raise `comm` to DEBUG
+ *  (esp_log_level_set) to see raw bytes again. */
 void logHexBytes(const char *direction, const uint8_t *data, size_t len)
 {
+    if (esp_log_level_get(TAG) < ESP_LOG_DEBUG) {
+        return; // skip the formatting cost entirely when not shown
+    }
     constexpr size_t MAX_SHOWN = 32;
     char line[MAX_SHOWN * 5 + 16];
     size_t shown = len < MAX_SHOWN ? len : MAX_SHOWN;
@@ -295,6 +310,14 @@ void feedByte(uint8_t b)
 
 void onPortData(const uint8_t *data, size_t len)
 {
+    if (len == 0) {
+        // Stream-break marker from the transport (RX overflow flush): any
+        // in-flight frame is gone, so drop parser state and hunt for the
+        // next STX at a real frame boundary.
+        ESP_LOGW(TAG, "RX stream break -- parser reset, waiting for next frame");
+        resetParser();
+        return;
+    }
     logHexBytes("RX", data, len);
     for (size_t i = 0; i < len; i++) {
         feedByte(data[i]);

@@ -12,6 +12,7 @@ lv_obj_t *s_content = nullptr;
 lv_obj_t *s_active_label = nullptr;
 lv_obj_t *s_status_label = nullptr;
 std::vector<lv_obj_t *> s_baud_btns; // parallel to ports::baudRates()
+bool s_observer_registered = false;  // ports::onChange observers can't be removed
 
 void refreshActiveLabel()
 {
@@ -56,12 +57,15 @@ void baudBtnClickedCb(lv_event_t *e)
 
 /** ports::onChange hook: the transport/baud changed from ANY source --
  *  boot-time NVS restore, the web API, or a peer's baud broadcast. May run
- *  off the LVGL task, so take the lock before touching widgets. */
+ *  off the LVGL task, so take the lock before touching widgets. Guards
+ *  against the scene being destroyed (lazy scene memory management). */
 void onPortsChanged()
 {
     lvgl_port_lock(-1);
-    refreshActiveLabel();
-    refreshBaudHighlight();
+    if (s_content != nullptr) {
+        refreshActiveLabel();
+        refreshBaudHighlight();
+    }
     lvgl_port_unlock();
 }
 
@@ -160,10 +164,25 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
 
     // Stay in sync with changes from every other source: the boot-time NVS
     // restore (ports::init runs after the UI is built), the web GUI, and
-    // baud broadcasts from the peer device.
-    ports::onChange(onPortsChanged);
+    // baud broadcasts from the peer device. Registered once ever (the
+    // observer list only grows); the callback null-checks the widgets.
+    if (!s_observer_registered) {
+        s_observer_registered = true;
+        ports::onChange(onPortsChanged);
+    }
 
     return s_content;
+}
+
+void destroy()
+{
+    if (s_content != nullptr) {
+        lv_obj_del(s_content);
+    }
+    s_content = nullptr;
+    s_active_label = nullptr;
+    s_status_label = nullptr;
+    s_baud_btns.clear();
 }
 
 } // namespace ui_ports

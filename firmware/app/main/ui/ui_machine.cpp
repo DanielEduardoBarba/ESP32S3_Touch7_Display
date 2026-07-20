@@ -161,7 +161,32 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
     // the state changes for a reason other than this board's own touchscreen.
     machine_state::setUiCallbacks(applyDialFromElsewhere, applyToggleFromElsewhere);
 
+    // Rebuilds start from the CURRENT machine state (this scene is
+    // destroyed while other scenes are shown; the data outlives the widgets).
+    machine_state::State now = machine_state::current();
+    lv_arc_set_value(s_dial, now.dial_value);
+    updateDialLabel(now.dial_value);
+    if (now.toggle_state) {
+        lv_obj_add_state(s_toggle, LV_STATE_CHECKED);
+    }
+    updateToggleLabel(now.toggle_state);
+
     return s_content;
+}
+
+void destroy()
+{
+    // Detach machine_state's UI hooks FIRST so a peer/web event arriving
+    // mid-teardown can't touch dying widgets.
+    machine_state::setUiCallbacks(nullptr, nullptr);
+    if (s_content != nullptr) {
+        lv_obj_del(s_content);
+    }
+    s_content = nullptr;
+    s_dial = nullptr;
+    s_dial_value_label = nullptr;
+    s_toggle = nullptr;
+    s_toggle_state_label = nullptr;
 }
 
 } // namespace ui_machine

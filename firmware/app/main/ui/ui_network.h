@@ -11,4 +11,7 @@ namespace ui_network {
  *  header. Returns its root container so the scene manager can show/hide it. */
 lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height);
 
+/** Frees the whole widget tree (scene manager calls this when leaving). */
+void destroy();
+
 } // namespace ui_network

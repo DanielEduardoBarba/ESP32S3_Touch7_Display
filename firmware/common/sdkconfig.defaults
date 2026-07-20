@@ -22,6 +22,18 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
+# Keep scarce INTERNAL RAM for what can only live there (task stacks, DMA,
+# WiFi internals): allocations above 512B go to PSRAM first instead of the
+# default 16KB threshold, and WiFi/LWIP buffers may use PSRAM too. Without
+# this, five LVGL scenes of widgets drained internal heap to <10KB and task
+# creation (web server, fw-update sender) started failing.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Keep the UART ISR running while flash operations disable the cache
+# (OTA writes during device-to-device updates!). Without this, non-IRAM
+# ISRs are suspended during every flash write and the 128-byte RX FIFO
+# overflows in <3ms at 460800 baud, corrupting mid-transfer frames.
+CONFIG_UART_ISR_IN_IRAM=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
 # --- Performance / RTOS ---
@@ -76,7 +88,9 @@ CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_MEMCPY_MEMSET_STD=y
 CONFIG_LV_ATTRIBUTE_FAST_MEM_IRAM=y
-CONFIG_LV_USE_PERF_MONITOR=y
+# LVGL's built-in perf monitor is replaced by the project's own combined
+# FPS/CPU/RAM/PSRAM card (firmware/common/dev_monitor.h, dev builds only).
+# CONFIG_LV_USE_PERF_MONITOR is not set
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_18=y

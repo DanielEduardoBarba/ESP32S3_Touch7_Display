@@ -8,6 +8,7 @@ namespace {
 
 lv_obj_t *s_content = nullptr;
 lv_obj_t *s_wifi_status_label = nullptr;
+bool s_observer_registered = false; // wifi_manager callbacks can't be removed
 
 void onWifiStateChange(wifi_manager::State state, const std::string &ssid, const std::string &ip)
 {
@@ -76,9 +77,27 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_align_to(hint, card, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
 
-    wifi_manager::onStateChange(onWifiStateChange);
+    // Register once ever (the observer list only grows); the callback
+    // guards against the label being destroyed between visits.
+    if (!s_observer_registered) {
+        s_observer_registered = true;
+        wifi_manager::onStateChange(onWifiStateChange);
+    }
+
+    // Rebuilds start from the CURRENT wifi state, not "not connected".
+    onWifiStateChange(wifi_manager::state(), wifi_manager::currentSsid(),
+                      wifi_manager::ipAddress());
 
     return s_content;
+}
+
+void destroy()
+{
+    s_wifi_status_label = nullptr; // onWifiStateChange checks this
+    if (s_content != nullptr) {
+        lv_obj_del(s_content);
+    }
+    s_content = nullptr;
 }
 
 } // namespace ui_network

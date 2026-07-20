@@ -35,6 +35,9 @@ void openModal(const std::string &ssid)
         lv_obj_add_flag(s_forget_btn, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_clear_flag(s_modal_bg, LV_OBJ_FLAG_HIDDEN);
+    // Scene roots are (re)created above older siblings (lazy scene
+    // management), so re-assert the modal's z-order every open.
+    lv_obj_move_foreground(s_modal_bg);
     lv_obj_add_flag(s_dropdown, LV_OBJ_FLAG_HIDDEN);
 }
 

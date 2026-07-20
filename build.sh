@@ -93,6 +93,11 @@
 #                                    registry, so a mixed 7 + 7b fleet
 #                                    rebuilds/reflashes each device with the
 #                                    right config without any flags.
+#   ./build.sh --prod | --dev       Production vs development build (default:
+#                                    dev). --prod compiles out dev-only UI
+#                                    (the on-screen FPS/CPU/RAM/PSRAM card);
+#                                    switching modes auto-cleans the stage
+#                                    like a variant switch does.
 #   ./build.sh --help
 #
 # Notes:
@@ -145,6 +150,9 @@ USB_DEVS=0
 # custom board config -- see firmware/README.md "Board variants"). Applies
 # to --build/--flash/--install/--run/--monitor/--menuconfig/--clean.
 VARIANT="7"
+# Build mode: "dev" (default; on-screen FPS/CPU/RAM overlay shown) or
+# "prod" (overlay compiled out). Set with --dev/--prod on any command.
+BUILD_MODE="dev"
 # Kept so ensure_dialout_group() can re-exec this exact invocation via `sg`.
 ORIGINAL_ARGS=("$@")
 
@@ -157,7 +165,7 @@ warn() { echo -e "${c_bold}${c_yellow}==>${c_reset} $*"; }
 err()  { echo -e "${c_bold}${c_red}==>${c_reset} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-usage() { sed -n '2,116p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,122p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # --------------------------------------------------------------------------
 # Setup (fresh machine bootstrap)
@@ -549,14 +557,15 @@ variant_marker_file() { echo "$(stage_dir "$1")/.build_variant"; }
 ensure_variant_consistency() {
     local stage="$1"
     local marker; marker="$(variant_marker_file "$stage")"
+    local current="$VARIANT:$BUILD_MODE"
     if [[ -f "$marker" ]]; then
         local previous; previous="$(cat "$marker")"
-        if [[ "$previous" != "$VARIANT" ]]; then
-            warn "Stage '$stage' was last built for variant '$previous'; switching to '$VARIANT' -- cleaning stale build output and sdkconfig first."
+        if [[ "$previous" != "$current" ]]; then
+            warn "Stage '$stage' was last built as '$previous'; switching to '$current' -- cleaning stale build output and sdkconfig first."
             rm -rf "$(stage_dir "$stage")/build" "$(stage_dir "$stage")/sdkconfig"
         fi
     fi
-    echo "$VARIANT" > "$marker"
+    echo "$current" > "$marker"
 }
 
 # The unique USB serial number of the board behind a /dev/tty* node (the
@@ -629,7 +638,7 @@ cmd_mem() {
 ACTION=""
 STAGE_ARG=""
 
-# First pass: pull out --port/--variant anywhere in the args.
+# First pass: pull out --port/--variant/--prod/--dev anywhere in the args.
 args=("$@")
 filtered=()
 i=0
@@ -639,6 +648,10 @@ while [[ $i -lt ${#args[@]} ]]; do
         PORT_OVERRIDE="${args[$i]:-}"
     elif [[ "${args[$i]}" == "--usbdevs" ]]; then
         USB_DEVS=1
+    elif [[ "${args[$i]}" == "--prod" ]]; then
+        BUILD_MODE="prod"
+    elif [[ "${args[$i]}" == "--dev" ]]; then
+        BUILD_MODE="dev"
     elif [[ "${args[$i]}" == "--variant" ]]; then
         i=$((i+1))
         VARIANT="${args[$i]:-}"
@@ -653,6 +666,11 @@ while [[ $i -lt ${#args[@]} ]]; do
 done
 set -- "${filtered[@]+"${filtered[@]}"}"
 export TOUCH_ESP32_VARIANT="$VARIANT"
+if [[ "$BUILD_MODE" == "prod" ]]; then
+    export TOUCH_ESP32_PROD=1
+else
+    export TOUCH_ESP32_PROD=0
+fi
 
 # Sets STAGE_ARG from the next positional arg if it's present and doesn't
 # look like another flag (e.g. `--build app` vs just `--build`), then shifts

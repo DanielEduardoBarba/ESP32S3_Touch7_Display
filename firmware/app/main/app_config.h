@@ -12,12 +12,21 @@
 // Bump this whenever the app's user-facing behavior changes. Shown in the
 // header (next to the Home button), used by the peer version sync in the
 // Update scene, and available to the web GUI/logs.
-#define APP_VERSION "0.0.4"
-
+#define APP_VERSION "0.0.12"
+// --- Development / production -------------------------------------------------
+// 1 = development (default): on-screen FPS/CPU/RAM/PSRAM overlay card is
+// shown (see firmware/common/dev_monitor.h). 0 = production: the overlay
+// is compiled out entirely. Forced to 0 by `./build.sh ... --prod`
+// (a compile definition set from the build scripts); `--dev` is the default.
+#ifndef APP_DEV_MODE
+#define APP_DEV_MODE 1
+#endif
 // --- Debug scene / log store -----------------------------------------------
 // Every log line also goes into a RAM ring buffer for the Debug scene (the
 // real console output is untouched). Oldest lines fall off past this cap.
-#define APP_LOG_STORE_MAX        300
+// Kept deliberately small: the Debug scene is a quick glance at recent
+// activity, not an exhaustive log (use the serial console for that).
+#define APP_LOG_STORE_MAX        50
 // How often the Debug scene refreshes its view of the ring buffer (ms).
 #define APP_DEBUG_REFRESH_MS     500
 
@@ -30,11 +39,12 @@
 // CAN link: identifier used for the byte-stream frames.
 #define APP_CAN_MSG_ID           0x100
 // Framing: payload ceiling for a request/response frame (bounds RX buffer).
-#define APP_COMM_MAX_PAYLOAD     512
+#define APP_COMM_MAX_PAYLOAD     4096
 
 // --- Device-to-device firmware update ---------------------------------------
 // Data bytes per CMD_DATA frame (fits within APP_COMM_MAX_PAYLOAD + headers).
-#define APP_UPDATE_CHUNK_SIZE    256
+// Bigger chunks = fewer stop-and-wait round trips = faster transfers.
+#define APP_UPDATE_CHUNK_SIZE    2048
 // How long the sender waits for each stop-and-wait ACK (ms).
 #define APP_UPDATE_ACK_TIMEOUT_MS 3000
 // How many times each frame (BEGIN/DATA/END) is retransmitted before the

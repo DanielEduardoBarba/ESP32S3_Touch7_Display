@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -528,8 +529,11 @@ void start()
     config.stack_size = 8192;
     config.lru_purge_enable = true;
 
-    if (httpd_start(&s_server, &config) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start HTTP server");
+    if (esp_err_t err = httpd_start(&s_server, &config); err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start HTTP server: %s (internal heap free: %u, min ever: %u)",
+                 esp_err_to_name(err),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         return;
     }
 

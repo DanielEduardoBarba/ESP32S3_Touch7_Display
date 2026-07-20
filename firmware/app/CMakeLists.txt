@@ -28,6 +28,12 @@ if(CMAKE_MATCH_1)
     set(PROJECT_VER "${CMAKE_MATCH_1}")
     message(STATUS "App version (from app_config.h): ${PROJECT_VER}")
 endif()
+# CRITICAL: file(READ) creates no configure dependency on its own -- without
+# this line, editing APP_VERSION would NOT re-run CMake and every image would
+# keep being stamped with a stale PROJECT_VER (the factory menu then shows
+# the wrong/same version for both OTA slots).
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_LIST_DIR}/main/app_config.h")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(app)

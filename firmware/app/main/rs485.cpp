@@ -27,20 +27,51 @@ constexpr int RS485_RX_GPIO = 15;
 // (coordinated across both boards by ports::setBaud). Both ends of the bus
 // must always use the same rate.
 constexpr int RS485_BAUD_RATE = APP_PEER_BAUD_DEFAULT;
-constexpr int RS485_RX_BUF_SIZE = 512;
+// Sized for a full firmware-update chunk frame (APP_UPDATE_CHUNK_SIZE +
+// framing) with headroom.
+constexpr int RS485_RX_BUF_SIZE = 4096;
 
 RxCallback s_rx_cb;
+QueueHandle_t s_uart_queue = nullptr;
 
+/** Event-driven RX: the UART driver signals as soon as data arrives (or
+ *  the line goes idle), so frames are delivered within ~1ms instead of
+ *  after a fixed polling timeout. That latency matters a LOT for the
+ *  firmware update's stop-and-wait ACKs: the old 50ms-per-direction
+ *  polling capped transfers at ~1.5-2.5KB/s REGARDLESS of baud rate. */
 void rxTask(void *arg)
 {
-    uint8_t buf[RS485_RX_BUF_SIZE];
+    static uint8_t buf[RS485_RX_BUF_SIZE];
+    uart_event_t event;
     while (true) {
-        int len = uart_read_bytes(RS485_UART, buf, sizeof(buf), pdMS_TO_TICKS(50));
-        if (len > 0 && s_rx_cb) {
-            s_rx_cb(buf, static_cast<size_t>(len));
+        if (xQueueReceive(s_uart_queue, &event, portMAX_DELAY) != pdTRUE) {
+            continue;
         }
-        // Loop tick, non-blocking beyond the 50ms read timeout above, so this
-        // task never starves the WiFi/LVGL/web-server tasks.
+        switch (event.type) {
+        case UART_DATA: {
+            size_t to_read = event.size < sizeof(buf) ? event.size : sizeof(buf);
+            int len = uart_read_bytes(RS485_UART, buf, to_read, 0);
+            if (len > 0 && s_rx_cb) {
+                s_rx_cb(buf, static_cast<size_t>(len));
+            }
+            break;
+        }
+        case UART_FIFO_OVF:
+        case UART_BUFFER_FULL:
+            // Drop the backlog and resync. CRITICAL: the parser downstream
+            // may be mid-frame -- deliver a zero-length "stream break" so it
+            // resets too, otherwise every retransmission gets consumed as
+            // payload of the truncated old frame and never parses again.
+            ESP_LOGW(TAG, "RX overflow -- flushing input and resetting the frame parser");
+            uart_flush_input(RS485_UART);
+            xQueueReset(s_uart_queue);
+            if (s_rx_cb) {
+                s_rx_cb(nullptr, 0); // stream-break marker
+            }
+            break;
+        default:
+            break;
+        }
     }
 }
 
@@ -56,14 +87,14 @@ void init()
     cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
     cfg.source_clk = UART_SCLK_DEFAULT;
 
-    ESP_ERROR_CHECK(uart_driver_install(RS485_UART, RS485_RX_BUF_SIZE * 2, 0, 0, nullptr, 0));
+    ESP_ERROR_CHECK(uart_driver_install(RS485_UART, RS485_RX_BUF_SIZE * 2, 0, 32, &s_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(RS485_UART, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(RS485_UART, RS485_TX_GPIO, RS485_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    // 6KB stack: the RX callback chain now includes comm_protocol parsing
-    // and fw_update's esp_ota_write() (device-to-device updates), which
-    // need more headroom than plain byte forwarding did.
-    xTaskCreatePinnedToCore(rxTask, "rs485_rx", 6144, nullptr, 5, nullptr, tskNO_AFFINITY);
+    // 8KB stack: the RX callback chain includes comm_protocol parsing and
+    // fw_update's esp_ota_write() (device-to-device updates), plus the 2KB
+    // local frame buffer headroom.
+    xTaskCreatePinnedToCore(rxTask, "rs485_rx", 8192, nullptr, 5, nullptr, tskNO_AFFINITY);
 
     ESP_LOGI(TAG, "RS485 initialized on UART%d @ %d baud", (int)RS485_UART, RS485_BAUD_RATE);
 }

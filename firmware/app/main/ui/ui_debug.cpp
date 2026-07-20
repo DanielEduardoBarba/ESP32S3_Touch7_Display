@@ -11,6 +11,7 @@ namespace {
 lv_obj_t *s_content = nullptr;
 lv_obj_t *s_panel = nullptr;
 lv_obj_t *s_label = nullptr;
+lv_timer_t *s_refresh_timer = nullptr;
 uint32_t s_last_rev = 0;
 
 /** Runs on the LVGL task; only rebuilds the (potentially large) text when
@@ -77,8 +78,23 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
     lv_label_set_long_mode(s_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(s_label, lv_color_hex(0x8fd18f), 0);
 
-    lv_timer_create(refreshTimerCb, APP_DEBUG_REFRESH_MS, nullptr);
+    s_refresh_timer = lv_timer_create(refreshTimerCb, APP_DEBUG_REFRESH_MS, nullptr);
+    s_last_rev = 0; // force a repaint with whatever the ring holds now
     return s_content;
+}
+
+void destroy()
+{
+    if (s_refresh_timer != nullptr) {
+        lv_timer_del(s_refresh_timer);
+        s_refresh_timer = nullptr;
+    }
+    if (s_content != nullptr) {
+        lv_obj_del(s_content);
+    }
+    s_content = nullptr;
+    s_panel = nullptr;
+    s_label = nullptr;
 }
 
 } // namespace ui_debug

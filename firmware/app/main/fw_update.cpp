@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
@@ -595,7 +596,16 @@ bool startSend()
     if (s_status.state == State::ReceiveDone) {
         return false; // this device has a pending update -- reboot first
     }
-    xTaskCreatePinnedToCore(senderTask, "fw_send", 6144, nullptr, 5, nullptr, tskNO_AFFINITY);
+    if (xTaskCreatePinnedToCore(senderTask, "fw_send", 6144, nullptr, 5, nullptr,
+                                tskNO_AFFINITY) != pdPASS) {
+        // Task stacks MUST come from internal RAM -- surface the failure
+        // instead of silently doing nothing.
+        ESP_LOGE(TAG, "Could not create sender task (internal heap free: %u, min ever: %u)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        setStatus(State::Failed, 0, 0, "Could not start sender (out of internal memory)");
+        return false;
+    }
     return true;
 }
 

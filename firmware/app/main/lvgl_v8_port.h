@@ -16,7 +16,11 @@
 
 #define LVGL_PORT_TICK_PERIOD_MS                (2)
 
-#define LVGL_PORT_BUFFER_MALLOC_CAPS            (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+// Draw buffers live in PSRAM: two 20-row buffers at 1024px wide are ~80KB,
+// which starved internal RAM (task stacks, WiFi, httpd can ONLY use
+// internal). Octal PSRAM @80MHz renders fast enough -- check the on-screen
+// FPS monitor if in doubt.
+#define LVGL_PORT_BUFFER_MALLOC_CAPS            (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define LVGL_PORT_BUFFER_SIZE_HEIGHT            (20)
 #define LVGL_PORT_BUFFER_NUM                    (2)
 
