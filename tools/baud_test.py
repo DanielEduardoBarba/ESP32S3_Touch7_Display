@@ -26,7 +26,7 @@ import time
 
 import serial
 
-SAFE_RATE = 115200
+SAFE_RATE = 250000  # the firmware's APP_PEER_BAUD_DEFAULT (exact 80MHz/320)
 DEFAULT_RATES = [500000, 640000, 800000, 1000000, 1250000, 1600000, 2000000, 2500000, 4000000, 5000000]
 
 PASS_RE = re.compile(r"Update verified \(CRC OK\)")
@@ -48,6 +48,32 @@ def open_port(port: str) -> serial.Serial:
 def send(ser: serial.Serial, cmd: str) -> None:
     ser.write((cmd + "\n").encode())
     ser.flush()
+
+
+def wait_ready(ser: serial.Serial, name: str, timeout_s: float = 45.0) -> bool:
+    """Opening a USB-Serial-JTAG CDC port can RESET the board (modem line
+    pulse), which then boots through the factory splash first. Poll with
+    'status' until the app's dev console answers."""
+    deadline = time.time() + timeout_s
+    buf = b""
+    last_poke = 0.0
+    while time.time() < deadline:
+        if time.time() - last_poke > 2.0:
+            try:
+                send(ser, "status")
+            except Exception:
+                pass
+            last_poke = time.time()
+        data = ser.read(4096)
+        if data:
+            buf += data
+            if b"dev_console" in buf:
+                print(f"    {name}: dev console ready")
+                return True
+            buf = buf[-4096:]
+        time.sleep(0.05)
+    print(f"    {name}: dev console NOT responding after {timeout_s}s")
+    return False
 
 
 def drain(ser: serial.Serial) -> None:
@@ -103,6 +129,11 @@ def main() -> int:
     rates = [int(r) for r in args.rates.split(",")]
     puller = open_port(args.puller)
     sender = open_port(args.sender)
+
+    print("Waiting for both devices' dev consoles (port open may have reset them)...")
+    if not (wait_ready(puller, "puller") and wait_ready(sender, "sender")):
+        print("Aborting: a device never became ready. Is it a --dev build?")
+        return 1
 
     results = []
     best_clean = None

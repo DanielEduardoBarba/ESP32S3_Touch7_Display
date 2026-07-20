@@ -311,11 +311,13 @@ void feedByte(uint8_t b)
 void onPortData(const uint8_t *data, size_t len)
 {
     if (len == 0) {
-        // Stream-break marker from the transport (RX overflow flush): any
-        // in-flight frame is gone, so drop parser state and hunt for the
-        // next STX at a real frame boundary.
-        ESP_LOGW(TAG, "RX stream break -- parser reset, waiting for next frame");
-        resetParser();
+        // Stream-break marker from the transport (RX overflow flush, or an
+        // idle gap on the wire): any in-flight frame is dead. Only worth
+        // acting on when the parser is actually mid-frame.
+        if (s_state != ParseState::WaitStx) {
+            ESP_LOGW(TAG, "RX stream break -- parser reset, waiting for next frame");
+            resetParser();
+        }
         return;
     }
     logHexBytes("RX", data, len);

@@ -12,7 +12,7 @@
 // Bump this whenever the app's user-facing behavior changes. Shown in the
 // header (next to the Home button), used by the peer version sync in the
 // Update scene, and available to the web GUI/logs.
-#define APP_VERSION "0.0.12"
+#define APP_VERSION "0.0.13"
 // --- Development / production -------------------------------------------------
 // 1 = development (default): on-screen FPS/CPU/RAM/PSRAM overlay card is
 // shown (see firmware/common/dev_monitor.h). 0 = production: the overlay
@@ -33,7 +33,8 @@
 // --- Peer link ---------------------------------------------------------------
 // Baud used by RS485/UART peer links until the user picks another one in the
 // Ports scene (both boards must match; changes are broadcast to stay in sync).
-#define APP_PEER_BAUD_DEFAULT    115200
+// Must be one of ports.cpp's EXACT-divisor rates (250000 = 80MHz/320).
+#define APP_PEER_BAUD_DEFAULT    250000
 // I2C link: fixed address each board writes the peer at.
 #define APP_I2C_PEER_ADDR        0x42
 // CAN link: identifier used for the byte-stream frames.
@@ -73,7 +74,7 @@
 #define APP_SPLASH_SHOW_LOGO     0          // 1 = show APP_SPLASH_LOGO_IMG (an
                                             // lv_img_dsc_t linked into the
                                             // factory stage), 0 = show text
-#define APP_SPLASH_TEXT          "touch-esp32"
+#define APP_SPLASH_TEXT          "Welcome!"
 #define APP_SPLASH_TEXT_COLOR    0xe6edf3
 #define APP_SPLASH_SECONDS       3
 #define APP_SPLASH_TAPS_FOR_MENU 3          // rapid taps on the logo/text

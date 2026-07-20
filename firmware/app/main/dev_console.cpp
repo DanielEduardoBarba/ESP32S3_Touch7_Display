@@ -9,7 +9,6 @@
 #include <cstring>
 
 #include "driver/usb_serial_jtag.h"
-#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -97,10 +96,12 @@ void init()
         .tx_buffer_size = 2048,
         .rx_buffer_size = 256,
     };
-    if (usb_serial_jtag_driver_install(&cfg) == ESP_OK) {
-        // Route console VFS through the driver so log TX and our RX coexist.
-        usb_serial_jtag_vfs_use_driver();
-    }
+    // Driver is used for RX ONLY. Console TX deliberately stays on the
+    // default (non-driver, never-blocking) path: routing logs through the
+    // driver's bounded TX buffer made log calls BLOCK whenever the host
+    // lagged, stalling the RS485 RX task mid-transfer and overflowing its
+    // ring buffer (observed as "RX overflow" during firmware updates).
+    usb_serial_jtag_driver_install(&cfg);
     xTaskCreatePinnedToCore(consoleTask, "dev_console", 4096, nullptr, 3, nullptr, tskNO_AFFINITY);
     ESP_LOGI(TAG, "Dev console ready (sync|push|pull|baud N|baudlocal N|update-reset|status)");
 }

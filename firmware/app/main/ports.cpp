@@ -37,17 +37,15 @@ constexpr uint8_t STORE_VERSION = 1;
 constexpr const char *BAUD_KEY = "peer_baud";
 constexpr uint8_t BAUD_VERSION = 1;
 
-// Baud ladder for the peer link. Both ends are ESP32-S3s, so rates need
-// not be "standard" -- every entry above 115200 divides the 80MHz UART
-// clock EXACTLY (zero baud error): 200k=/400, 250k=/320, 400k=/200,
-// 500k=/160, 640k=/125, 800k=/100, 1M=/80, 1.25M=/64, 1.6M=/50, 2M=/40,
-// 2.5M=/32, 4M=/20, 5M=/16 (the S3 UART's ceiling). 115200 stays as the
-// boot/interop default. The REAL limit is the board's RC-timed RS485
-// auto-direction circuit (460800-class verified; 921600 garbled), so
-// everything past ~500k is a test ladder: run tools/baud_test.py (or climb
-// manually) and adopt the highest rate with zero CRC/resync warnings.
+// Baud ladder for the peer link -- EXACT 80MHz divisors ONLY (zero baud
+// error; both ends are ESP32-S3s so "standard" PC rates are unnecessary):
+// 100k=/800, 200k=/400, 250k=/320, 400k=/200, 500k=/160, 640k=/125,
+// 800k=/100, 1M=/80, 1.25M=/64, 1.6M=/50, 2M=/40, 2.5M=/32, 4M=/20,
+// 5M=/16 (the S3 UART's ceiling). The REAL limit is the board's RC-timed
+// RS485 auto-direction circuit: run tools/baud_test.py and adopt the
+// highest rate with zero CRC/resync warnings.
 const std::vector<uint32_t> s_baud_rates = {
-    115200, 200000, 250000, 400000, 500000, 640000, 800000,
+    100000, 200000, 250000, 400000, 500000, 640000, 800000,
     1000000, 1250000, 1600000, 2000000, 2500000, 4000000, 5000000,
 };
 

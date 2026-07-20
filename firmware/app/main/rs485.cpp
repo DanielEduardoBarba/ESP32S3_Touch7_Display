@@ -2,6 +2,7 @@
 
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -43,12 +44,25 @@ void rxTask(void *arg)
 {
     static uint8_t buf[RS485_RX_BUF_SIZE];
     uart_event_t event;
+    int64_t last_rx_us = 0;
     while (true) {
         if (xQueueReceive(s_uart_queue, &event, portMAX_DELAY) != pdTRUE) {
             continue;
         }
         switch (event.type) {
         case UART_DATA: {
+            // Idle-gap resync: a frame never legitimately pauses mid-flight
+            // (at these rates a whole frame is <100ms), so a long silence
+            // means any half-parsed frame is dead -- tell the parser BEFORE
+            // delivering the new bytes. This is what lets a retransmission
+            // after a 3s ACK timeout parse cleanly instead of being eaten
+            // as "payload" of a truncated frame (deterministic livelock).
+            int64_t now = esp_timer_get_time();
+            if (last_rx_us != 0 && (now - last_rx_us) > 50000 && s_rx_cb) {
+                s_rx_cb(nullptr, 0); // stream-break marker (no-op if parser idle)
+            }
+            last_rx_us = now;
+
             size_t to_read = event.size < sizeof(buf) ? event.size : sizeof(buf);
             int len = uart_read_bytes(RS485_UART, buf, to_read, 0);
             if (len > 0 && s_rx_cb) {
@@ -62,7 +76,8 @@ void rxTask(void *arg)
             // may be mid-frame -- deliver a zero-length "stream break" so it
             // resets too, otherwise every retransmission gets consumed as
             // payload of the truncated old frame and never parses again.
-            ESP_LOGW(TAG, "RX overflow -- flushing input and resetting the frame parser");
+            ESP_LOGW(TAG, "RX overflow (%s) -- flushing input and resetting the frame parser",
+                     event.type == UART_FIFO_OVF ? "hw FIFO" : "ring buffer");
             uart_flush_input(RS485_UART);
             xQueueReset(s_uart_queue);
             if (s_rx_cb) {
@@ -87,7 +102,7 @@ void init()
     cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
     cfg.source_clk = UART_SCLK_DEFAULT;
 
-    ESP_ERROR_CHECK(uart_driver_install(RS485_UART, RS485_RX_BUF_SIZE * 2, 0, 32, &s_uart_queue, 0));
+    ESP_ERROR_CHECK(uart_driver_install(RS485_UART, RS485_RX_BUF_SIZE * 4, 0, 32, &s_uart_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(RS485_UART, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(RS485_UART, RS485_TX_GPIO, RS485_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
