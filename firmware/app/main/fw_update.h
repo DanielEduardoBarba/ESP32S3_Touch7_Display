@@ -104,6 +104,11 @@ bool startPull();
 /** After a successful receive: restart into the new image. */
 void rebootIntoUpdate();
 
+/** Dev tooling only (see dev_console.cpp): aborts any in-flight receive and
+ *  clears the transfer state back to Idle, so automated tests (e.g. the
+ *  baud-rate ladder) can run transfer after transfer without rebooting. */
+void resetForTesting();
+
 /** GUI/web hook: fired on every state/progress change (from the transfer
  *  task -- UI layers must lock LVGL themselves). May be called multiple
  *  times to register multiple observers. */

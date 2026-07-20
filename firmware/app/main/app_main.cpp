@@ -25,6 +25,7 @@
 
 #include "boot_health.h"
 #include "comm_protocol.h"
+#include "dev_console.h"
 #include "fw_update.h"
 #include "log_store.h"
 #include "lvgl_v8_port.h"
@@ -114,6 +115,7 @@ extern "C" void app_main(void)
     comm_protocol::init();  // STX/ETX framing + hex logging on top of ports
     machine_state::init();  // dial/toggle sync over the framing
     fw_update::init();      // device-to-device OTA over the framing
+    dev_console::init();    // dev builds: serial command hooks for tooling
 
     ESP_LOGI(TAG, "Starting web server");
     web_server::start();

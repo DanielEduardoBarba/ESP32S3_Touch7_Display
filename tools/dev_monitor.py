@@ -274,6 +274,44 @@ def rebuild_and_flash(repo_root: str, stage: str, devices) -> None:
     print(f"{YELLOW}     press its physical RESET button once.){RESET}\n")
 
 
+def send_device_cmd(devices, target: int, cmd: str) -> None:
+    """Writes a dev-console command line (see firmware dev_console.cpp) to the
+    TARGETED device(s) over their serial port. Dev builds only."""
+    targeted = devices_for_target(devices, target)
+    if not targeted:
+        print(f"\n{RED}==> No devices match the current target.{RESET}\n")
+        return
+    for d in targeted:
+        if not d.connected:
+            print(f"{RED}==> {d.tag()} is disconnected; skipped.{RESET}")
+            continue
+        try:
+            d.ser.write((cmd + "\n").encode())
+            print(f"{CYAN}==> sent '{cmd}' to {d.tag()}{RESET}")
+        except Exception as e:
+            print(f"{RED}==> write to {d.tag()} failed: {e}{RESET}")
+
+
+def prompt_baud(devices, target: int) -> None:
+    """Reads digits (typed in cbreak mode) until Enter, then sends a
+    'baud <rate>' command to the targeted device -- which broadcasts the
+    switch to its peer first, so both ends change together."""
+    print(f"\n{BOLD}Enter new baud rate (digits, then Enter; empty cancels):{RESET} ", end="", flush=True)
+    digits = ""
+    while True:
+        ch = sys.stdin.read(1)
+        if ch in ("\n", "\r"):
+            break
+        if ch.isdigit():
+            digits += ch
+            print(ch, end="", flush=True)
+    print()
+    if not digits:
+        print(f"{YELLOW}==> cancelled{RESET}\n")
+        return
+    send_device_cmd(devices, target, f"baud {digits}")
+
+
 def print_help(devices, stage: str, target: int) -> None:
     print(f"\n{BOLD}=== Devices ==={RESET}")
     for d in devices:
@@ -289,6 +327,11 @@ def print_help(devices, stage: str, target: int) -> None:
     print("  a        Rebuild + reflash 'all' (factory + app)")
     print(f"  b        Build '{stage}' only (compile check, no flash)")
     print("  w        Rebuild web UI only (npm build; flash it with 'r'/'a')")
+    print("  y        SYNC peer versions from the targeted device")
+    print("  p        PULL update: targeted device fetches its peer's image")
+    print("  o        PUSH update: targeted device sends its image to the peer")
+    print("  c        Change peer-link BAUD rate (typed; broadcast to peer)")
+    print("  x        Reset targeted device(s) update/transfer state (testing)")
     print("  h        Show this help")
     print("  Ctrl+C   Quit")
 
@@ -394,6 +437,21 @@ def main() -> int:
 
                     elif ch.lower() == "w":
                         build_web(args.repo_root)
+
+                    elif ch == "y":
+                        send_device_cmd(devices, target, "sync")
+
+                    elif ch == "p":
+                        send_device_cmd(devices, target, "pull")
+
+                    elif ch == "o":
+                        send_device_cmd(devices, target, "push")
+
+                    elif ch == "c":
+                        prompt_baud(devices, target)
+
+                    elif ch == "x":
+                        send_device_cmd(devices, target, "update-reset")
 
                     # r/f/a all share the same rebuild+reflash flow and only
                     # differ in WHICH build.sh stage they pass through:

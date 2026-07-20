@@ -630,6 +630,21 @@ void rebootIntoUpdate()
     esp_restart();
 }
 
+void resetForTesting()
+{
+    if (s_rx_stall_timer != nullptr) {
+        esp_timer_stop(s_rx_stall_timer);
+    }
+    if (s_rx_ota != 0) {
+        esp_ota_abort(s_rx_ota);
+        s_rx_ota = 0;
+    }
+    s_rx_done_ok = false;
+    s_rx_received = 0;
+    s_rx_expected_size = 0;
+    setStatus(State::Idle, 0, 0, "Transfer state reset (dev tooling)");
+}
+
 void onStatusChange(StatusCallback cb)
 {
     s_status_cbs.push_back(std::move(cb));

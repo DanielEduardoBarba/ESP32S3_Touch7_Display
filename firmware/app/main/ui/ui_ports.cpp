@@ -125,7 +125,9 @@ lv_obj_t *build(lv_obj_t *screen, lv_coord_t header_height)
 
     // --- Baud rate ----------------------------------------------------------
     lv_obj_t *baud_title = lv_label_create(s_content);
-    lv_label_set_text(baud_title, "Baud rate (switch is broadcast so all peers change together)");
+    lv_label_set_text(baud_title,
+                      "Baud rate (broadcast so all peers change together; 460800 = fastest\n"
+                      "verified rate for this board's RS485 auto-direction circuit)");
     lv_obj_set_style_text_color(baud_title, lv_color_hex(0x9aa4b2), 0);
     lv_obj_align_to(baud_title, list, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 20);
 
