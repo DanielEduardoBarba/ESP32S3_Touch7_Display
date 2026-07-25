@@ -42,6 +42,13 @@
 // Framing: payload ceiling for a request/response frame (bounds RX buffer).
 #define APP_COMM_MAX_PAYLOAD     4096
 
+// --- Bluetooth (BLE) ---------------------------------------------------------
+// Advertised name prefix; the last two bytes of the board's MAC are appended
+// so two boards on the same bench are distinguishable in a phone's list.
+#define APP_BLE_NAME_PREFIX      "touch-esp32"
+// How long a scan from the Bluetooth menu runs (seconds).
+#define APP_BLE_SCAN_SECONDS     6
+
 // --- Device-to-device firmware update ---------------------------------------
 // Data bytes per CMD_DATA frame (fits within APP_COMM_MAX_PAYLOAD + headers).
 // Bigger chunks = fewer stop-and-wait round trips = faster transfers.

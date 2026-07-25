@@ -53,6 +53,8 @@ constexpr uint8_t TYPE_CONTROL = 0x01;  // link control (baud switching, ...)
 constexpr uint8_t TYPE_UPDATE  = 0x02;  // firmware update transfer (fw_update.cpp)
 
 constexpr uint8_t CMD_BAUD_SET = 0x02;  // payload: 4 bytes BE, new baud rate
+// payload: ssid_len(1) | ssid | pass_len(1) | pass -- see sendWifiCredentials()
+constexpr uint8_t CMD_WIFI_CREDS = 0x03;
 
 // --- Compact status frame constants ---------------------------------------
 // msg_type picks the data width (see statusDataLen() in comm_protocol.cpp):
@@ -80,6 +82,7 @@ using ModeCallback = std::function<void(uint8_t mode)>;
 using SetpointCallback = std::function<void(int16_t value)>;
 using PulseCallback = std::function<void(uint8_t button_id)>;
 using BaudCallback = std::function<void(uint32_t baud)>;
+using WifiCredsCallback = std::function<void(const char *ssid, const char *password)>;
 /** Raw hook for other modules (fw_update) to receive whole verified frames
  *  of their message type. */
 using FrameCallback = std::function<void(uint8_t cmd, const uint8_t *payload, size_t len)>;
@@ -103,6 +106,14 @@ void sendPulse(uint8_t button_id);
 /** Broadcasts "switch to this baud NOW" (sent at the CURRENT baud so the
  *  peer hears it, then both sides switch -- see ports::setBaud). */
 void sendBaudChange(uint32_t baud);
+/** Hands this board's Wi-Fi credentials to the peer so it can join the same
+ *  network (see wifi_sync.h). Length-prefixed rather than NUL-terminated so
+ *  the frame stays self-describing:
+ *      ssid_len(1) | ssid bytes | pass_len(1) | pass bytes
+ *  NOTE: the payload is NOT encrypted -- the peer link is a short private
+ *  wire between two boards of the same machine, but treat it as you would
+ *  any other cable carrying secrets. */
+void sendWifiCredentials(const char *ssid, const char *password);
 /** Generic request/response frame send (used by fw_update.cpp). */
 void sendFrame(uint8_t type, uint8_t cmd, const uint8_t *payload, size_t len);
 
@@ -114,6 +125,7 @@ void onModeReceived(ModeCallback cb);
 void onSetpointReceived(SetpointCallback cb);
 void onPulseReceived(PulseCallback cb);
 void onBaudChangeReceived(BaudCallback cb);
+void onWifiCredentialsReceived(WifiCredsCallback cb);
 /** Receive every verified TYPE_UPDATE frame. */
 void onUpdateFrame(FrameCallback cb);
 

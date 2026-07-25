@@ -139,7 +139,10 @@ cd touch-esp32
   udev rule so ModemManager leaves the board's CH34x USB-serial port alone,
 - clones & installs ESP-IDF (`esp32s3` target only) into `~/esp/esp-idf`,
   and adds a `get_idf` shell alias for future sessions,
-- installs Node.js (>= 18) if missing/too old, needed to build the React UI.
+- installs Node.js (>= 18) if missing/too old, needed to build the React UI,
+- installs the LVGL Pro Editor into `~/esp/lvgl_pro_editor` (skip with
+  `TOUCH_ESP32_SKIP_EDITOR=1`), then verifies every tool actually resolves
+  before declaring success.
 
 `--install` auto-detects the board's serial port (`/dev/ttyUSB*`/`/dev/ttyACM*`);
 pass `--port /dev/ttyXXX` explicitly if you have more than one device plugged in
@@ -157,6 +160,17 @@ and resume watching -- no need to re-run the command (Expo Go-style manual
 reload; there's no file-watching, it's a deliberate keypress). Ctrl+C to quit.
 This also works with just `./build.sh --monitor app` if you don't need to
 build first.
+
+### Designing screens: `./build.sh --editor`
+
+Opens the official [LVGL Pro Editor](https://lvgl.io/pro) on the `ui/`
+project: XML-defined screens with an instant, pixel-accurate preview at the
+panel's real 1024x600 resolution. The editor is installed by `--setup` (or on
+first use of `--editor`) and needs no license beyond the free Community tier.
+
+Read [ui/README.md](ui/README.md) first: the editor designs for the **LVGL 9**
+API while this firmware runs **LVGL 8.4**, so the project is currently a design
+and preview surface rather than a code generator for `firmware/app/main/ui/`.
 
 ## Manual (without build.sh)
 

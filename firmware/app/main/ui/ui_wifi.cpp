@@ -294,4 +294,11 @@ void toggleDropdown(lv_obj_t *anchor)
     }
 }
 
+void hideDropdown()
+{
+    if (s_dropdown != nullptr) {
+        lv_obj_add_flag(s_dropdown, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 } // namespace ui_wifi

@@ -12,3 +12,27 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # More LVGL widgets/fonts used by the app's UI (header bar, dropdowns, modal,
 # on-screen keyboard) beyond the common defaults.
 CONFIG_LV_FONT_MONTSERRAT_22=y
+
+# Bluetooth (BLE only -- the ESP32-S3 has no Classic BT radio), NimBLE host.
+# Deliberately app-stage only: the factory/recovery stage shares
+# ../common/sdkconfig.defaults and must stay small enough for its 1MB
+# partition, and it has no use for a radio.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# Both roles: CENTRAL/OBSERVER to scan for and connect to other devices,
+# PERIPHERAL/BROADCASTER to be discoverable and let a phone connect to us.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2
+# Pairing: Secure Connections + legacy fallback, bonds kept in NVS so a
+# paired device reconnects without asking the user again.
+CONFIG_BT_NIMBLE_SM_SC=y
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_MAX_BONDS=8
+# Keep the host's allocations in PSRAM: internal RAM is the scarce resource
+# on this board (LVGL buffers, task stacks, WiFi), see the SPIRAM policy in
+# ../common/sdkconfig.defaults.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y

@@ -24,6 +24,7 @@ ModeCallback s_mode_cb;
 SetpointCallback s_setpoint_cb;
 PulseCallback s_pulse_cb;
 BaudCallback s_baud_cb;
+WifiCredsCallback s_wifi_creds_cb;
 FrameCallback s_update_cb;
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,29 @@ void dispatchRequestFrame()
             uint32_t baud = (uint32_t)s_payload[0] << 24 | (uint32_t)s_payload[1] << 16 |
                             (uint32_t)s_payload[2] << 8 | s_payload[3];
             s_baud_cb(baud);
+        } else if (s_cmd == CMD_WIFI_CREDS && s_wifi_creds_cb) {
+            // ssid_len | ssid | pass_len | pass, all bounds-checked against
+            // the payload actually received (it came off a wire).
+            const uint8_t *p = s_payload.data();
+            size_t n = s_payload.size();
+            if (n < 1) {
+                break;
+            }
+            size_t ssid_len = p[0];
+            if (n < 1 + ssid_len + 1) {
+                ESP_LOGW(TAG, "RX wifi creds frame truncated -- dropped");
+                break;
+            }
+            size_t pass_len = p[1 + ssid_len];
+            if (n < 1 + ssid_len + 1 + pass_len || ssid_len > 32 || pass_len > 64) {
+                ESP_LOGW(TAG, "RX wifi creds frame malformed -- dropped");
+                break;
+            }
+            char ssid[33] = {};
+            char pass[65] = {};
+            std::memcpy(ssid, p + 1, ssid_len);
+            std::memcpy(pass, p + 1 + ssid_len + 1, pass_len);
+            s_wifi_creds_cb(ssid, pass);
         }
         break;
     case TYPE_UPDATE:
@@ -424,6 +448,26 @@ void sendPulse(uint8_t button_id)
     sendStatusFrame(STATUS_MSG_PULSE, &button_id, 1);
 }
 
+void sendWifiCredentials(const char *ssid, const char *password)
+{
+    size_t ssid_len = std::strlen(ssid);
+    size_t pass_len = std::strlen(password);
+    if (ssid_len > 32 || pass_len > 64) {
+        ESP_LOGW(TAG, "Refusing to send oversized wifi credentials (ssid %zu, pass %zu)",
+                 ssid_len, pass_len);
+        return;
+    }
+    std::vector<uint8_t> payload;
+    payload.reserve(2 + ssid_len + pass_len);
+    payload.push_back(static_cast<uint8_t>(ssid_len));
+    payload.insert(payload.end(), ssid, ssid + ssid_len);
+    payload.push_back(static_cast<uint8_t>(pass_len));
+    payload.insert(payload.end(), password, password + pass_len);
+    // The password is never logged, here or anywhere else on this path.
+    ESP_LOGI(TAG, "TX wifi credentials for SSID '%s' to peer", ssid);
+    sendFrame(TYPE_CONTROL, CMD_WIFI_CREDS, payload.data(), payload.size());
+}
+
 void onDialReceived(DialCallback cb)
 {
     s_dial_cb = std::move(cb);
@@ -457,6 +501,11 @@ void onPulseReceived(PulseCallback cb)
 void onBaudChangeReceived(BaudCallback cb)
 {
     s_baud_cb = std::move(cb);
+}
+
+void onWifiCredentialsReceived(WifiCredsCallback cb)
+{
+    s_wifi_creds_cb = std::move(cb);
 }
 
 void onUpdateFrame(FrameCallback cb)

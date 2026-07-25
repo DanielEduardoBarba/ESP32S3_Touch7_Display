@@ -24,8 +24,10 @@
 #include "lvgl.h"
 
 #include "boot_health.h"
+#include "ble_manager.h"
 #include "comm_protocol.h"
 #include "dev_console.h"
+#include "display_settings.h"
 #include "fw_update.h"
 #include "log_store.h"
 #include "lvgl_v8_port.h"
@@ -36,6 +38,7 @@
 #include "user_store.h"
 #include "web_server.h"
 #include "wifi_manager.h"
+#include "wifi_sync.h"
 
 using namespace esp_panel::board;
 
@@ -99,9 +102,9 @@ extern "C" void app_main(void)
     ui::init(board);
     lv_refr_now(nullptr); // splash is on screen before the backlight returns
     lvgl_port_unlock();
-    if (backlight != nullptr) {
-        backlight->on();
-    }
+    // Restores the operator's saved brightness instead of a blind full-on:
+    // this is also what ends the deliberate "backlight off" window above.
+    display_settings::init(backlight);
 
     ESP_LOGI(TAG, "Mounting storage");
     storage::init(board);
@@ -110,10 +113,14 @@ extern "C" void app_main(void)
     wifi_manager::init();
     wifi_manager::autoConnect();
 
+    ESP_LOGI(TAG, "Starting Bluetooth (BLE)");
+    ble_manager::init();
+
     ESP_LOGI(TAG, "Starting peer link (ports + framing + machine sync + fw update)");
     ports::init();          // transports (RS485 default; see ports_config.h)
     comm_protocol::init();  // STX/ETX framing + hex logging on top of ports
     machine_state::init();  // dial/toggle sync over the framing
+    wifi_sync::init();      // wifi credentials mirrored to the peer board
     fw_update::init();      // device-to-device OTA over the framing
     dev_console::init();    // dev builds: serial command hooks for tooling
 

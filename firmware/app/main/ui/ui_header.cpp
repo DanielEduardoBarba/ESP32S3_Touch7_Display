@@ -1,6 +1,8 @@
 #include "ui_header.h"
 
 #include "app_config.h"
+#include "ui_bluetooth.h"
+#include "ui_brightness.h"
 #include "ui_scene_manager.h"
 #include "ui_wifi.h"
 
@@ -16,9 +18,15 @@ void hideHamburgerMenu()
     lv_obj_add_flag(s_hamburger_menu, LV_OBJ_FLAG_HIDDEN);
 }
 
+/** Only one header dropdown is open at a time -- opening a second one on
+ *  top of the first just buries it. Each handler closes the OTHERS and then
+ *  toggles its own, so tapping the same icon twice still closes it. */
 void hamburgerBtnClickedCb(lv_event_t *e)
 {
     bool hidden = lv_obj_has_flag(s_hamburger_menu, LV_OBJ_FLAG_HIDDEN);
+    ui_wifi::hideDropdown();
+    ui_bluetooth::hideDropdown();
+    ui_brightness::hideDropdown();
     if (hidden) {
         lv_obj_clear_flag(s_hamburger_menu, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_hamburger_menu);
@@ -67,13 +75,26 @@ void homeBtnClickedCb(lv_event_t *e)
 
 void infoBtnClickedCb(lv_event_t *e)
 {
-    // Placeholder: intentionally does nothing yet.
+    hideHamburgerMenu();
+    ui_wifi::hideDropdown();
+    ui_bluetooth::hideDropdown();
+    ui_brightness::toggleDropdown(lv_event_get_target(e));
 }
 
 void networkBtnClickedCb(lv_event_t *e)
 {
-    lv_obj_t *btn = lv_event_get_target(e);
-    ui_wifi::toggleDropdown(btn);
+    hideHamburgerMenu();
+    ui_bluetooth::hideDropdown();
+    ui_brightness::hideDropdown();
+    ui_wifi::toggleDropdown(lv_event_get_target(e));
+}
+
+void bluetoothBtnClickedCb(lv_event_t *e)
+{
+    hideHamburgerMenu();
+    ui_wifi::hideDropdown();
+    ui_brightness::hideDropdown();
+    ui_bluetooth::toggleDropdown(lv_event_get_target(e));
 }
 
 lv_obj_t *createIconButton(lv_obj_t *parent, const char *symbol_or_text)
@@ -164,6 +185,10 @@ lv_coord_t build(lv_obj_t *screen)
     lv_obj_t *network_btn = createIconButton(header, LV_SYMBOL_WIFI);
     lv_obj_align_to(network_btn, info_btn, LV_ALIGN_OUT_LEFT_MID, -8, 0);
     lv_obj_add_event_cb(network_btn, networkBtnClickedCb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *bluetooth_btn = createIconButton(header, LV_SYMBOL_BLUETOOTH);
+    lv_obj_align_to(bluetooth_btn, network_btn, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    lv_obj_add_event_cb(bluetooth_btn, bluetoothBtnClickedCb, LV_EVENT_CLICKED, nullptr);
 
     buildHamburgerMenu(screen);
 

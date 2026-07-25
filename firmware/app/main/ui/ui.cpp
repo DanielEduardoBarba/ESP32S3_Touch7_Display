@@ -2,6 +2,8 @@
 
 #include "lvgl.h"
 #include "../../../common/dev_monitor.h"
+#include "ui_bluetooth.h"
+#include "ui_brightness.h"
 #include "ui_debug.h"
 #include "ui_header.h"
 #include "ui_keyboard.h"
@@ -39,6 +41,8 @@ void init(esp_panel::board::Board *board)
     ui_scene_manager::show(Scene::Machine); // Machine is the default/home scene
 
     ui_wifi::init(screen);
+    ui_bluetooth::init(screen);   // header Bluetooth icon (left of Wi-Fi)
+    ui_brightness::init(screen);  // header "i" icon: local display settings
     ui_keyboard::init(screen);
 
     dev_monitor::show(); // FPS/CPU/RAM/PSRAM card (dev builds only)

@@ -60,6 +60,11 @@ int8_t rssi();
  *  network even while it's disconnected/out of range. */
 std::string savedSsid();
 
+/** The password saved alongside savedSsid(), or empty if none. Exists so
+ *  wifi_sync.cpp can hand the working credentials to the peer board; it is
+ *  never shown in the UI and never logged. */
+std::string savedPassword();
+
 /** Registers an additional scan-results subscriber (does not replace any
  *  previously-registered ones). */
 void onScanResults(ScanResultCallback cb);

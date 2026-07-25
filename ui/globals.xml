@@ -1,0 +1,44 @@
+<!--
+  Project-wide constants, styles and subjects.
+
+  The colors match the hand-written firmware UI (firmware/app/main/ui/*.cpp),
+  and the subjects use the SAME names as the fields of machine_state::State
+  (firmware/app/main/machine_state.h). Anything bound to these subjects can
+  later be driven from C with lv_subject_set_int(), which is how a design
+  made here gets wired to the real peer-synced state.
+-->
+<globals>
+    <consts>
+        <color name="col_bg" value="0x101317"/>
+        <color name="col_card" value="0x1c2128"/>
+        <color name="col_text" value="0xe6edf3"/>
+        <color name="col_muted" value="0x9aa4b2"/>
+        <color name="col_accent" value="0x3fb950"/>
+
+        <int name="card_width" value="296"/>
+        <int name="card_height" value="205"/>
+        <int name="card_gap" value="16"/>
+        <int name="header_height" value="56"/>
+    </consts>
+
+    <styles>
+        <style name="screen_bg" bg_color="#col_bg" bg_opa="255" pad_all="24"/>
+        <style name="card" bg_color="#col_card" bg_opa="255" radius="12"
+               border_width="0" pad_all="12"/>
+        <style name="caption" text_color="#col_muted"/>
+        <style name="value" text_color="#col_text"/>
+    </styles>
+
+    <subjects>
+        <!-- One per synced control (see machine_state.h). -->
+        <int name="dial_value" value="0"/>
+        <int name="speed" value="0"/>
+        <int name="setpoint" value="0"/>
+        <int name="mode" value="0"/>
+        <int name="toggle_sample" value="0"/>
+        <int name="toggle_pump" value="0"/>
+        <int name="toggle_valve" value="0"/>
+        <int name="toggle_light" value="0"/>
+        <int name="pulse_count" value="0"/>
+    </subjects>
+</globals>

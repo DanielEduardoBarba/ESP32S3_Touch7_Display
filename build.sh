@@ -5,7 +5,17 @@
 # Usage:
 #   ./build.sh --setup              One-time machine setup on a fresh Ubuntu
 #                                    install: apt packages, serial port
-#                                    permissions, ESP-IDF toolchain, Node.js.
+#                                    permissions, ESP-IDF toolchain, Node.js,
+#                                    and the LVGL Pro Editor (set
+#                                    TOUCH_ESP32_SKIP_EDITOR=1 to skip that
+#                                    ~165MB download on CI/containers).
+#   ./build.sh --editor             Open the LVGL Pro Editor on the ui/
+#                                    project (live, XML-based screen design
+#                                    with instant preview). Installs the
+#                                    editor first if it isn't there yet, so
+#                                    it also works on machines set up before
+#                                    the editor was added. See ui/README.md
+#                                    for the design -> firmware workflow.
 #   ./build.sh --web                Build the React UI (web/) into web/dist.
 #   ./build.sh --build [stage]      Build firmware. stage: factory|app|all
 #                                    (default: all).
@@ -141,6 +151,14 @@ IDF_TARGET="esp32s3"
 FLASH_BAUD="${FLASH_BAUD:-921600}"
 NODE_MIN_MAJOR=18
 
+# LVGL Pro Editor (the official LVGL UI editor: XML sources + live preview).
+# Shipped as a single Linux AppImage; we unpack it once at setup time so it
+# runs without libfuse2 (missing on Ubuntu 24.04+ and in containers).
+UI_PROJECT_DIR="$SCRIPT_DIR/ui"
+LVGL_EDITOR_DIR="${LVGL_EDITOR_DIR:-$HOME/esp/lvgl_pro_editor}"
+LVGL_EDITOR_RELEASE="${LVGL_EDITOR_RELEASE:-nightly}"
+LVGL_EDITOR_URL="${LVGL_EDITOR_URL:-https://github.com/lvgl/lvgl_pro/releases/download/$LVGL_EDITOR_RELEASE/LVGL_Pro_Editor-$LVGL_EDITOR_RELEASE-linux.zip}"
+
 PORT_OVERRIDE=""
 # Include /dev/ttyUSB* devices in port auto-detection (0 = ttyACM only).
 # Off by default so an unrelated ttyUSB board/dongle can never be flashed
@@ -165,7 +183,10 @@ warn() { echo -e "${c_bold}${c_yellow}==>${c_reset} $*"; }
 err()  { echo -e "${c_bold}${c_red}==>${c_reset} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-usage() { sed -n '2,122p' "$0" | sed 's/^# \{0,1\}//'; }
+# Prints the comment block at the top of this file (stops at the first line
+# that isn't a comment, so adding flags/docs up there never needs a matching
+# line-number update here).
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
 
 # --------------------------------------------------------------------------
 # Setup (fresh machine bootstrap)
@@ -241,6 +262,7 @@ cmd_setup() {
     fi
 
     setup_node
+    setup_lvgl_editor
 
     # Final verification: every tool the workflows need (build, flash, web,
     # --run monitor, baud_test) must actually resolve now -- fail loudly here
@@ -255,6 +277,10 @@ cmd_setup() {
         || { warn "MISSING: pyserial for python3 (tools/dev_monitor.py, tools/baud_test.py)"; missing=1; }
     [[ -x "$IDF_INSTALL_DIR/export.sh" ]] \
         || { warn "MISSING: ESP-IDF at $IDF_INSTALL_DIR"; missing=1; }
+    if [[ "${TOUCH_ESP32_SKIP_EDITOR:-0}" != "1" ]]; then
+        [[ -x "$LVGL_EDITOR_DIR/app/AppRun" ]] \
+            || { warn "MISSING: LVGL Pro Editor at $LVGL_EDITOR_DIR (re-run --setup, or './build.sh --editor' to install it on demand)"; missing=1; }
+    fi
     if [[ $missing -ne 0 ]]; then
         die "Environment verification FAILED -- fix the warnings above and re-run './build.sh --setup' (it is safe to re-run)."
     fi
@@ -263,6 +289,7 @@ cmd_setup() {
     log "Machine setup complete."
     warn "IMPORTANT: start a new shell (or run 'newgrp dialout') before flashing, so serial port permissions apply."
     log "Next: ./build.sh --install   (builds the web UI + both firmware stages, and flashes a connected board)"
+    log "      ./build.sh --editor    (opens the LVGL Pro Editor on the ui/ project -- see ui/README.md)"
 }
 
 setup_node() {
@@ -287,6 +314,86 @@ setup_node() {
         curl -fsSL "https://deb.nodesource.com/setup_20.x" | bash -
     fi
     $SUDO apt-get install -y nodejs
+}
+
+# --------------------------------------------------------------------------
+# LVGL Pro Editor (design-time UI tooling)
+# --------------------------------------------------------------------------
+# The editor ships as one self-contained AppImage. Running an AppImage
+# directly needs libfuse2, which Ubuntu 24.04+ and containers no longer
+# ship, so we unpack it ONCE here (--appimage-extract needs no FUSE) and
+# always launch the extracted AppRun. Idempotent: re-running --setup with
+# the editor already installed does nothing.
+setup_lvgl_editor() {
+    if [[ "${TOUCH_ESP32_SKIP_EDITOR:-0}" == "1" ]]; then
+        log "TOUCH_ESP32_SKIP_EDITOR=1 -- skipping the LVGL Pro Editor download."
+        return
+    fi
+    if [[ -x "$LVGL_EDITOR_DIR/app/AppRun" ]]; then
+        log "LVGL Pro Editor already installed at $LVGL_EDITOR_DIR ($(cat "$LVGL_EDITOR_DIR/VERSION" 2>/dev/null || echo 'unknown version'))."
+        return
+    fi
+
+    command -v curl >/dev/null 2>&1 || die "curl is required to download the LVGL Pro Editor (run './build.sh --setup' first)."
+    command -v unzip >/dev/null 2>&1 || die "unzip is required to unpack the LVGL Pro Editor (run './build.sh --setup' first)."
+
+    log "Installing the LVGL Pro Editor into $LVGL_EDITOR_DIR (~165MB download)..."
+    local tmp
+    tmp="$(mktemp -d)"
+    # shellcheck disable=SC2064  # expand $tmp now, on purpose
+    trap "rm -rf '$tmp'" RETURN
+
+    curl -fL --retry 2 -o "$tmp/editor.zip" "$LVGL_EDITOR_URL" \
+        || die "Download failed: $LVGL_EDITOR_URL (check the network, or set LVGL_EDITOR_URL to a specific release asset from https://github.com/lvgl/lvgl_pro/releases)"
+    unzip -q -o "$tmp/editor.zip" -d "$tmp/zip"
+
+    local appimage
+    appimage="$(find "$tmp/zip" -maxdepth 2 -name '*.AppImage' -type f | head -n1)"
+    [[ -n "$appimage" ]] || die "No .AppImage found inside $LVGL_EDITOR_URL -- the release layout may have changed."
+    chmod +x "$appimage"
+
+    ( cd "$tmp" && "$appimage" --appimage-extract >/dev/null ) \
+        || die "Could not unpack $(basename "$appimage")."
+    [[ -x "$tmp/squashfs-root/AppRun" ]] || die "Unpacked editor has no AppRun -- the release layout may have changed."
+
+    rm -rf "$LVGL_EDITOR_DIR"
+    mkdir -p "$LVGL_EDITOR_DIR"
+    mv "$tmp/squashfs-root" "$LVGL_EDITOR_DIR/app"
+    basename "$appimage" > "$LVGL_EDITOR_DIR/VERSION"
+
+    # Desktop launcher, so the editor also shows up in the app menu (nice to
+    # have -- never fatal, and pointless for root/container setups).
+    if [[ "$(id -u)" != "0" && -d "$HOME/.local/share" ]]; then
+        mkdir -p "$HOME/.local/share/applications"
+        cat > "$HOME/.local/share/applications/lvgl-pro-editor.desktop" <<EOF
+[Desktop Entry]
+Name=LVGL Pro Editor
+Comment=The official LVGL UI Editor
+Exec=$LVGL_EDITOR_DIR/app/AppRun --no-sandbox %U
+Icon=$LVGL_EDITOR_DIR/app/LVGL_Pro_Editor.png
+Terminal=false
+Type=Application
+Categories=Development;
+StartupWMClass=io.lvgl.pro-editor
+EOF
+    fi
+
+    log "LVGL Pro Editor installed ($(cat "$LVGL_EDITOR_DIR/VERSION"))."
+    log "Open it on this project's UI with: ./build.sh --editor"
+}
+
+cmd_editor() {
+    setup_lvgl_editor
+    [[ -x "$LVGL_EDITOR_DIR/app/AppRun" ]] \
+        || die "LVGL Pro Editor is not installed (TOUCH_ESP32_SKIP_EDITOR=1?). Run './build.sh --setup' with it unset."
+    [[ -f "$UI_PROJECT_DIR/project.xml" ]] \
+        || die "No LVGL project at $UI_PROJECT_DIR (expected project.xml). See ui/README.md."
+
+    log "Opening the LVGL Pro Editor on $UI_PROJECT_DIR ..."
+    log "First launch asks for a license -- pick 'Community' (free for personal/open-source use) or 'Evaluation'."
+    # --no-sandbox: matches the AppImage's own .desktop entry (Electron's
+    # sandbox needs a setuid helper that an unpacked AppImage doesn't have).
+    exec "$LVGL_EDITOR_DIR/app/AppRun" --no-sandbox "$UI_PROJECT_DIR"
 }
 
 # --------------------------------------------------------------------------
@@ -732,6 +839,7 @@ consume_stage_arg() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --setup) ACTION="setup"; shift ;;
+        --editor) ACTION="editor"; shift ;;
         --web) ACTION="web"; shift ;;
         --build) ACTION="build"; shift; consume_stage_arg "all" "${1:-}"; if [[ $shift_extra -eq 1 ]]; then shift; fi ;;
         --flash) ACTION="flash"; shift; consume_stage_arg "all" "${1:-}"; if [[ $shift_extra -eq 1 ]]; then shift; fi ;;
@@ -750,6 +858,7 @@ done
 
 case "$ACTION" in
     setup) cmd_setup ;;
+    editor) cmd_editor ;;
     web) cmd_web ;;
     build) cmd_build "$STAGE_ARG" ;;
     flash) ensure_dialout_group; cmd_flash "$STAGE_ARG" ;;

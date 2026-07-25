@@ -243,6 +243,12 @@ std::string savedSsid()
     return loadCredentials(ssid, password) ? ssid : std::string();
 }
 
+std::string savedPassword()
+{
+    std::string ssid, password;
+    return loadCredentials(ssid, password) ? password : std::string();
+}
+
 std::string ipAddress()
 {
     return s_ip;

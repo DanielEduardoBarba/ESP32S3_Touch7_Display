@@ -1,0 +1,20 @@
+<!--
+  LVGL Pro Editor project for the touch-esp32 UI.
+
+  Open it with the build script's "editor" flag:  ./build.sh -\-editor
+
+  The display target mirrors the real hardware (Waveshare ESP32-S3-Touch-LCD-7/7B,
+  1024x600), so the preview is pixel-accurate to the panel.
+
+  NOTE: lvgl_version below is the version the EDITOR designs and exports for.
+  The firmware currently runs LVGL 8.4 (see firmware/*/idf_component.yml), and
+  the editor's exported C code targets the LVGL 9 API. ui/README.md explains
+  what that means for getting these screens onto the board.
+-->
+<project name="touch_ui" lvgl_version="9.5.0" theme="default">
+    <targets>
+        <target name="waveshare_7b">
+            <display width="1024" height="600"/>
+        </target>
+    </targets>
+</project>

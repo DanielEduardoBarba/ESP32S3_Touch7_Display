@@ -19,4 +19,7 @@ void init(lv_obj_t *screen);
  *  network icon button). Triggers a fresh scan each time it's opened. */
 void toggleDropdown(lv_obj_t *anchor);
 
+/** Hides it (used when another header dropdown opens). */
+void hideDropdown();
+
 } // namespace ui_wifi

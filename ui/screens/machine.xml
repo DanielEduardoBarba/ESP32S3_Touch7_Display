@@ -1,0 +1,97 @@
+<!--
+  Design-time copy of the Machine scene (firmware/app/main/ui/ui_machine.cpp).
+
+  It is a STARTING POINT for designing in the editor, not a generated mirror:
+  every widget is bound to the subject of the same name as the matching
+  machine_state field, so the layout can be reshaped freely here without
+  losing the link back to the firmware's peer-synced state.
+-->
+<screen>
+    <view>
+        <style name="screen_bg"/>
+
+        <lv_label text="Machine" align="top_left">
+            <style name="value"/>
+        </lv_label>
+
+        <lv_label text="Every control here is synced live over RS485 with another board, and with the web UI."
+                  align="top_left" y="34">
+            <style name="caption"/>
+        </lv_label>
+
+        <!-- Card grid: same flex-wrap arrangement as the firmware scene. -->
+        <lv_obj width="100%" height="440" y="70" bg_opa="0" border_width="0"
+                pad_all="0" flex_flow="row_wrap"
+                style_pad_row="#card_gap" style_pad_column="#card_gap">
+
+            <card title="Dial (0-100)">
+                <lv_arc min_value="0" max_value="100" width="128" height="128"
+                        align="center" y="12" bind_value="dial_value"/>
+            </card>
+
+            <card title="Speed (0-1000)">
+                <lv_label align="top_right" bind_text="speed">
+                    <style name="value"/>
+                </lv_label>
+                <lv_slider min_value="0" max_value="1000" width="248"
+                           align="center" y="16" bind_value="speed"/>
+            </card>
+
+            <card title="Setpoint (-50..150)">
+                <lv_button width="64" height="56" align="left_mid" y="16">
+                    <lv_label text="-" align="center"/>
+                    <subject_increment_event subject="setpoint" trigger="clicked"
+                                             step="-5" min="-50" max="150"/>
+                </lv_button>
+                <lv_label align="center" y="16" bind_text="setpoint">
+                    <style name="value"/>
+                </lv_label>
+                <lv_button width="64" height="56" align="right_mid" y="16">
+                    <lv_label text="+" align="center"/>
+                    <subject_increment_event subject="setpoint" trigger="clicked"
+                                             step="5" min="-50" max="150"/>
+                </lv_button>
+            </card>
+
+            <card title="Mode">
+                <lv_dropdown options="Idle&#10;Manual&#10;Auto&#10;Service"
+                             width="248" align="center" y="12"
+                             bind_value="mode"/>
+            </card>
+
+            <card title="Toggles">
+                <lv_label text="Sample" align="top_left" y="34">
+                    <style name="value"/>
+                </lv_label>
+                <lv_switch align="top_left" y="58" bind_checked="toggle_sample"/>
+
+                <lv_label text="Pump" align="top_left" x="140" y="34">
+                    <style name="value"/>
+                </lv_label>
+                <lv_switch align="top_left" x="140" y="58" bind_checked="toggle_pump"/>
+
+                <lv_label text="Valve" align="top_left" y="108">
+                    <style name="value"/>
+                </lv_label>
+                <lv_switch align="top_left" y="132" bind_checked="toggle_valve"/>
+
+                <lv_label text="Light" align="top_left" x="140" y="108">
+                    <style name="value"/>
+                </lv_label>
+                <lv_switch align="top_left" x="140" y="132" bind_checked="toggle_light"/>
+            </card>
+
+            <card title="Pulse (momentary)">
+                <lv_button width="150" height="60" align="left_mid" y="10">
+                    <lv_label text="Send pulse" align="center"/>
+                    <subject_increment_event subject="pulse_count" trigger="clicked" step="1"/>
+                </lv_button>
+                <lv_led width="34" height="34" align="right_mid" x="-20" y="10"
+                        color="#col_accent"/>
+                <lv_label align="bottom_right" bind_text="pulse_count">
+                    <style name="caption"/>
+                </lv_label>
+            </card>
+        </lv_obj>
+    </view>
+</screen>

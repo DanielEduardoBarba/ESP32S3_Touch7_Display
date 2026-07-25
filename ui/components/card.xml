@@ -1,0 +1,19 @@
+<!--
+  One card of the Machine grid: the dark rounded panel with a grey caption,
+  matching makeCard() in firmware/app/main/ui/ui_machine.cpp.
+
+  Children passed into <card> land inside the panel, below the caption.
+-->
+<component>
+    <api>
+        <prop name="title" type="string" default="Card"/>
+    </api>
+
+    <view extends="lv_obj" width="#card_width" height="#card_height">
+        <style name="card"/>
+
+        <lv_label text="$title" align="top_left">
+            <style name="caption"/>
+        </lv_label>
+    </view>
+</component>
