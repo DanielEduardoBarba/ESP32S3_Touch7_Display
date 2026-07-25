@@ -30,9 +30,10 @@
  *      STX | msg_type | data... | crc | ETX
  *
  *    - BITFIELD types (1 data byte): banks of on/off devices, one bit each
- *      (0x81 TOGGLES: bit 0 = the sample toggle).
- *    - BYTEFIELD types (2 data bytes, big-endian): one multi-byte value per
- *      control (0x82 DIAL: 0-100 today, room to 65535).
+ *      (0x81 TOGGLES: bits 0..3 = the four sample switches).
+ *    - BYTEFIELD types (1 or 2 data bytes, big-endian): one value per
+ *      control (0x82 DIAL, 0x83 SPEED, 0x85 SETPOINT are 16-bit; 0x84 MODE
+ *      and 0x86 PULSE are 8-bit).
  *    - crc: CRC8 (poly 0x07, init 0x00) over msg_type + data bytes.
  *
  * Everything else -- packet messages, baud-rate changes, app version
@@ -55,18 +56,29 @@ constexpr uint8_t CMD_BAUD_SET = 0x02;  // payload: 4 bytes BE, new baud rate
 
 // --- Compact status frame constants ---------------------------------------
 // msg_type picks the data width (see statusDataLen() in comm_protocol.cpp):
-//   0x81 TOGGLES: 1-byte BITFIELD -- banks of on/off devices, one bit each.
-//                 Use this for the sample toggle and every future on/off
-//                 device (bits 1..7 are free).
-//   0x82 DIAL:    2-byte BYTEFIELD (big-endian) -- one multi-byte value per
-//                 control. Use this pattern for the dial (0-100 today, up
-//                 to 65535) and future value-carrying controls; give each
-//                 its own msg_type.
-constexpr uint8_t STATUS_MSG_TOGGLES = 0x81;
-constexpr uint8_t STATUS_MSG_DIAL    = 0x82;
+//   0x81 TOGGLES:  1-byte BITFIELD -- a bank of on/off devices, one bit each
+//                  (bits 0..3 used today, bits 4..7 free for more switches).
+//   0x82 DIAL:     2-byte BYTEFIELD (big-endian), 0-100 today.
+//   0x83 SPEED:    2-byte BYTEFIELD, slider value.
+//   0x84 MODE:     1-byte BYTEFIELD, enum selection.
+//   0x85 SETPOINT: 2-byte BYTEFIELD carrying a SIGNED int16 (two's
+//                  complement, big-endian) -- can go negative.
+//   0x86 PULSE:    1-byte BYTEFIELD, momentary "button pressed" event
+//                  (the byte is the button id) rather than a held state.
+// Give every future value-carrying control its own msg_type in this range.
+constexpr uint8_t STATUS_MSG_TOGGLES  = 0x81;
+constexpr uint8_t STATUS_MSG_DIAL     = 0x82;
+constexpr uint8_t STATUS_MSG_SPEED    = 0x83;
+constexpr uint8_t STATUS_MSG_MODE     = 0x84;
+constexpr uint8_t STATUS_MSG_SETPOINT = 0x85;
+constexpr uint8_t STATUS_MSG_PULSE    = 0x86;
 
 using DialCallback = std::function<void(uint16_t value)>;
 using TogglesCallback = std::function<void(uint8_t bitfield)>;
+using SpeedCallback = std::function<void(uint16_t value)>;
+using ModeCallback = std::function<void(uint8_t mode)>;
+using SetpointCallback = std::function<void(int16_t value)>;
+using PulseCallback = std::function<void(uint8_t button_id)>;
 using BaudCallback = std::function<void(uint32_t baud)>;
 /** Raw hook for other modules (fw_update) to receive whole verified frames
  *  of their message type. */
@@ -80,6 +92,14 @@ void init();
 void sendDial(uint16_t value);
 /** On/off bank as a compact 1-byte bitfield status frame (0x81). */
 void sendToggles(uint8_t bitfield);
+/** Slider value as a compact 2-byte bytefield status frame (0x83). */
+void sendSpeed(uint16_t value);
+/** Mode selection as a compact 1-byte bytefield status frame (0x84). */
+void sendMode(uint8_t mode);
+/** Signed setpoint as a compact 2-byte bytefield status frame (0x85). */
+void sendSetpoint(int16_t value);
+/** Momentary button press as a compact 1-byte status frame (0x86). */
+void sendPulse(uint8_t button_id);
 /** Broadcasts "switch to this baud NOW" (sent at the CURRENT baud so the
  *  peer hears it, then both sides switch -- see ports::setBaud). */
 void sendBaudChange(uint32_t baud);
@@ -89,6 +109,10 @@ void sendFrame(uint8_t type, uint8_t cmd, const uint8_t *payload, size_t len);
 // --- Receiving -------------------------------------------------------------
 void onDialReceived(DialCallback cb);
 void onTogglesReceived(TogglesCallback cb);
+void onSpeedReceived(SpeedCallback cb);
+void onModeReceived(ModeCallback cb);
+void onSetpointReceived(SetpointCallback cb);
+void onPulseReceived(PulseCallback cb);
 void onBaudChangeReceived(BaudCallback cb);
 /** Receive every verified TYPE_UPDATE frame. */
 void onUpdateFrame(FrameCallback cb);

@@ -19,6 +19,10 @@ constexpr size_t MAX_PAYLOAD = APP_COMM_MAX_PAYLOAD;
 
 DialCallback s_dial_cb;
 TogglesCallback s_toggles_cb;
+SpeedCallback s_speed_cb;
+ModeCallback s_mode_cb;
+SetpointCallback s_setpoint_cb;
+PulseCallback s_pulse_cb;
 BaudCallback s_baud_cb;
 FrameCallback s_update_cb;
 
@@ -129,9 +133,13 @@ void sendStatusFrame(uint8_t msg_type, const uint8_t *data, size_t data_len)
 size_t statusDataLen(uint8_t msg_type)
 {
     switch (msg_type) {
-    case STATUS_MSG_TOGGLES: return 1; // bitfield: 8 on/off devices
-    case STATUS_MSG_DIAL:    return 2; // bytefield: one 16-bit value
-    default:                 return 0;
+    case STATUS_MSG_TOGGLES:  return 1; // bitfield: 8 on/off devices
+    case STATUS_MSG_DIAL:     return 2; // bytefield: one 16-bit value
+    case STATUS_MSG_SPEED:    return 2;
+    case STATUS_MSG_MODE:     return 1;
+    case STATUS_MSG_SETPOINT: return 2; // signed int16
+    case STATUS_MSG_PULSE:    return 1; // button id
+    default:                  return 0;
     }
 }
 
@@ -215,6 +223,16 @@ void dispatchStatusFrame()
         s_toggles_cb(s_status_data[0]);
     } else if (s_type == STATUS_MSG_DIAL && s_dial_cb) {
         s_dial_cb((uint16_t)s_status_data[0] << 8 | s_status_data[1]);
+    } else if (s_type == STATUS_MSG_SPEED && s_speed_cb) {
+        s_speed_cb((uint16_t)s_status_data[0] << 8 | s_status_data[1]);
+    } else if (s_type == STATUS_MSG_MODE && s_mode_cb) {
+        s_mode_cb(s_status_data[0]);
+    } else if (s_type == STATUS_MSG_SETPOINT && s_setpoint_cb) {
+        // Two's complement on the wire: rebuild as unsigned, then cast.
+        uint16_t raw = (uint16_t)s_status_data[0] << 8 | s_status_data[1];
+        s_setpoint_cb(static_cast<int16_t>(raw));
+    } else if (s_type == STATUS_MSG_PULSE && s_pulse_cb) {
+        s_pulse_cb(s_status_data[0]);
     }
 }
 
@@ -381,6 +399,31 @@ void sendToggles(uint8_t bitfield)
     sendStatusFrame(STATUS_MSG_TOGGLES, &bitfield, 1);
 }
 
+void sendSpeed(uint16_t value)
+{
+    uint8_t data[2] = {static_cast<uint8_t>(value >> 8), static_cast<uint8_t>(value & 0xFF)};
+    sendStatusFrame(STATUS_MSG_SPEED, data, sizeof(data));
+}
+
+void sendMode(uint8_t mode)
+{
+    sendStatusFrame(STATUS_MSG_MODE, &mode, 1);
+}
+
+void sendSetpoint(int16_t value)
+{
+    // Sent as two's complement big-endian so negative setpoints survive
+    // the trip (the receiver casts the raw 16 bits back to int16_t).
+    uint16_t raw = static_cast<uint16_t>(value);
+    uint8_t data[2] = {static_cast<uint8_t>(raw >> 8), static_cast<uint8_t>(raw & 0xFF)};
+    sendStatusFrame(STATUS_MSG_SETPOINT, data, sizeof(data));
+}
+
+void sendPulse(uint8_t button_id)
+{
+    sendStatusFrame(STATUS_MSG_PULSE, &button_id, 1);
+}
+
 void onDialReceived(DialCallback cb)
 {
     s_dial_cb = std::move(cb);
@@ -389,6 +432,26 @@ void onDialReceived(DialCallback cb)
 void onTogglesReceived(TogglesCallback cb)
 {
     s_toggles_cb = std::move(cb);
+}
+
+void onSpeedReceived(SpeedCallback cb)
+{
+    s_speed_cb = std::move(cb);
+}
+
+void onModeReceived(ModeCallback cb)
+{
+    s_mode_cb = std::move(cb);
+}
+
+void onSetpointReceived(SetpointCallback cb)
+{
+    s_setpoint_cb = std::move(cb);
+}
+
+void onPulseReceived(PulseCallback cb)
+{
+    s_pulse_cb = std::move(cb);
 }
 
 void onBaudChangeReceived(BaudCallback cb)

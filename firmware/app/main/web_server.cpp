@@ -393,7 +393,14 @@ std::string buildStateJson(const machine_state::State &state)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "dial_value", state.dial_value);
-    cJSON_AddBoolToObject(root, "toggle_state", state.toggle_state);
+    cJSON_AddNumberToObject(root, "speed", state.speed);
+    cJSON_AddNumberToObject(root, "setpoint", state.setpoint);
+    cJSON_AddNumberToObject(root, "mode", state.mode);
+    cJSON_AddNumberToObject(root, "pulse_count", state.pulse_count);
+    cJSON *toggles = cJSON_AddArrayToObject(root, "toggles");
+    for (uint8_t i = 0; i < machine_state::TOGGLE_COUNT; i++) {
+        cJSON_AddItemToArray(toggles, cJSON_CreateBool(state.toggles[i]));
+    }
     char *json = cJSON_PrintUnformatted(root);
     std::string result(json);
     cJSON_free(json);
@@ -492,20 +499,45 @@ esp_err_t wsHandler(httpd_req_t *req)
 
     cJSON *type_item = cJSON_GetObjectItem(json, "type");
     if (cJSON_IsString(type_item)) {
-        if (std::strcmp(type_item->valuestring, "dial") == 0) {
-            cJSON *value_item = cJSON_GetObjectItem(json, "value");
+        const char *type = type_item->valuestring;
+        cJSON *value_item = cJSON_GetObjectItem(json, "value");
+        // Every branch below is treated exactly like the equivalent
+        // touchscreen gesture: it moves the on-screen widget AND sends an
+        // RS485 packet to the other board. machine_state clamps the values,
+        // but the obvious range checks stay here too -- this is the
+        // untrusted-input boundary.
+        if (std::strcmp(type, "dial") == 0) {
             if (cJSON_IsNumber(value_item)) {
-                int value = value_item->valueint;
-                value = std::max(0, std::min(100, value));
-                // Treated exactly like a touchscreen drag-release: moves the
-                // on-screen dial AND sends an RS485 packet to the other board.
-                machine_state::setDialFromWeb(static_cast<uint8_t>(value));
+                int value = std::max(0, std::min<int>(machine_state::DIAL_MAX, value_item->valueint));
+                machine_state::setDial(static_cast<uint8_t>(value), machine_state::Source::Web);
             }
-        } else if (std::strcmp(type_item->valuestring, "toggle") == 0) {
+        } else if (std::strcmp(type, "speed") == 0) {
+            if (cJSON_IsNumber(value_item)) {
+                int value = std::max(0, std::min<int>(machine_state::SPEED_MAX, value_item->valueint));
+                machine_state::setSpeed(static_cast<uint16_t>(value), machine_state::Source::Web);
+            }
+        } else if (std::strcmp(type, "setpoint") == 0) {
+            if (cJSON_IsNumber(value_item)) {
+                int value = std::max<int>(machine_state::SETPOINT_MIN,
+                                          std::min<int>(machine_state::SETPOINT_MAX, value_item->valueint));
+                machine_state::setSetpoint(static_cast<int16_t>(value), machine_state::Source::Web);
+            }
+        } else if (std::strcmp(type, "mode") == 0) {
+            if (cJSON_IsNumber(value_item) && value_item->valueint >= 0 &&
+                value_item->valueint < machine_state::MODE_COUNT) {
+                machine_state::setMode(static_cast<uint8_t>(value_item->valueint),
+                                       machine_state::Source::Web);
+            }
+        } else if (std::strcmp(type, "toggle") == 0) {
+            cJSON *id_item = cJSON_GetObjectItem(json, "id");
             cJSON *state_item = cJSON_GetObjectItem(json, "state");
-            if (cJSON_IsBool(state_item)) {
-                machine_state::setToggleFromWeb(cJSON_IsTrue(state_item));
+            if (cJSON_IsNumber(id_item) && cJSON_IsBool(state_item) && id_item->valueint >= 0 &&
+                id_item->valueint < machine_state::TOGGLE_COUNT) {
+                machine_state::setToggle(static_cast<uint8_t>(id_item->valueint),
+                                         cJSON_IsTrue(state_item), machine_state::Source::Web);
             }
+        } else if (std::strcmp(type, "pulse") == 0) {
+            machine_state::firePulse(machine_state::Source::Web);
         }
     }
     cJSON_Delete(json);

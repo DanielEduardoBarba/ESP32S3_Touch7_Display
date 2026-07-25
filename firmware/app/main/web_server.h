@@ -15,11 +15,17 @@
  * Also a WebSocket endpoint that makes the web UI a live extension of the
  * touchscreen (see machine_state.h for the full explanation):
  *
- *   WS /ws  -> server pushes {"dial_value": N, "toggle_state": bool}
- *              whenever the Machine scene's state changes (from the local
- *              touchscreen, RS485, or another browser), and accepts
+ *   WS /ws  -> server pushes the whole Machine state
+ *                {"dial_value": N, "speed": N, "setpoint": N, "mode": N,
+ *                 "toggles": [bool, ...], "pulse_count": N}
+ *              whenever it changes (from the local touchscreen, RS485, or
+ *              another browser), and accepts
  *                {"type": "dial", "value": N}
+ *                {"type": "speed", "value": N}
+ *                {"type": "setpoint", "value": N}
+ *                {"type": "mode", "value": N}
  *                {"type": "toggle", "id": N, "state": bool}
+ *                {"type": "pulse"}
  *              which are applied exactly as if done on the display itself.
  */
 namespace web_server {
