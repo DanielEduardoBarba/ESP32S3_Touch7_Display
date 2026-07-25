@@ -175,29 +175,46 @@ cmd_setup() {
         die "This --setup flow targets Debian/Ubuntu (apt-get not found). Install ESP-IDF prerequisites manually: https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/linux-macos-setup.html"
     fi
 
+    # Barebones systems (containers, minimal server installs) often lack sudo
+    # or run everything as root -- handle both instead of assuming a desktop.
+    local SUDO="sudo"
+    if [[ "$(id -u)" == "0" ]]; then
+        SUDO=""
+    elif ! command -v sudo >/dev/null 2>&1; then
+        die "Not root and 'sudo' is not installed. Either install sudo or re-run --setup as root."
+    fi
+
     log "Updating apt and installing ESP-IDF + serial + build prerequisites..."
-    sudo apt-get update -y
-    sudo apt-get install -y \
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y \
         git wget curl flex bison gperf python3 python3-pip python3-venv \
+        python3-serial \
         cmake ninja-build ccache libffi-dev libssl-dev dfu-util \
         libusb-1.0-0 build-essential unzip
 
     log "Adding '$USER' to the 'dialout' group (serial port access for /dev/ttyUSB*/ttyACM*)..."
-    if ! groups "$USER" | grep -qw dialout; then
-        sudo usermod -aG dialout "$USER"
+    if [[ "$(id -u)" == "0" ]]; then
+        log "Running as root -- serial ports are already accessible; skipping group change."
+    elif ! groups "$USER" | grep -qw dialout; then
+        $SUDO usermod -aG dialout "$USER"
         warn "Added to 'dialout'. This only takes effect in a NEW login session:"
         warn "  log out/in, reboot, or run 'newgrp dialout' in your current shell."
     else
         log "'$USER' is already in the 'dialout' group."
     fi
 
-    log "Installing a udev rule so ModemManager (if present) ignores CH340/CH343 USB-serial adapters..."
-    local udev_rule="/etc/udev/rules.d/99-touch-esp32-serial.rules"
-    if [[ ! -f "$udev_rule" ]]; then
-        echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ENV{ID_MM_DEVICE_PROCESS}="0"' \
-            | sudo tee "$udev_rule" >/dev/null
-        sudo udevadm control --reload-rules
-        sudo udevadm trigger
+    if command -v udevadm >/dev/null 2>&1; then
+        log "Installing a udev rule so ModemManager (if present) never probes the boards' serial ports..."
+        local udev_rule="/etc/udev/rules.d/99-touch-esp32-serial.rules"
+        {
+            # CH340/CH343 USB-serial adapters (WCH) + Espressif native USB-Serial-JTAG.
+            echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ENV{ID_MM_DEVICE_PROCESS}="0"'
+            echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ENV{ID_MM_DEVICE_PROCESS}="0"'
+        } | $SUDO tee "$udev_rule" >/dev/null
+        $SUDO udevadm control --reload-rules
+        $SUDO udevadm trigger
+    else
+        warn "udevadm not found (container?) -- skipping the ModemManager udev rule."
     fi
 
     if [[ -x "$IDF_INSTALL_DIR/install.sh" ]]; then
@@ -225,6 +242,24 @@ cmd_setup() {
 
     setup_node
 
+    # Final verification: every tool the workflows need (build, flash, web,
+    # --run monitor, baud_test) must actually resolve now -- fail loudly here
+    # rather than mysteriously days later.
+    log "Verifying the development environment..."
+    local missing=0
+    local c
+    for c in git cmake ninja ccache node npm python3; do
+        command -v "$c" >/dev/null 2>&1 || { warn "MISSING: $c"; missing=1; }
+    done
+    python3 -c "import serial" 2>/dev/null \
+        || { warn "MISSING: pyserial for python3 (tools/dev_monitor.py, tools/baud_test.py)"; missing=1; }
+    [[ -x "$IDF_INSTALL_DIR/export.sh" ]] \
+        || { warn "MISSING: ESP-IDF at $IDF_INSTALL_DIR"; missing=1; }
+    if [[ $missing -ne 0 ]]; then
+        die "Environment verification FAILED -- fix the warnings above and re-run './build.sh --setup' (it is safe to re-run)."
+    fi
+    log "All tools verified."
+
     log "Machine setup complete."
     warn "IMPORTANT: start a new shell (or run 'newgrp dialout') before flashing, so serial port permissions apply."
     log "Next: ./build.sh --install   (builds the web UI + both firmware stages, and flashes a connected board)"
@@ -241,9 +276,17 @@ setup_node() {
         return
     fi
 
+    local SUDO="sudo"
+    if [[ "$(id -u)" == "0" ]]; then
+        SUDO=""
+    fi
     log "Installing Node.js (>= $NODE_MIN_MAJOR) via NodeSource, needed to build the React UI..."
-    curl -fsSL "https://deb.nodesource.com/setup_20.x" | sudo -E bash -
-    sudo apt-get install -y nodejs
+    if [[ -n "$SUDO" ]]; then
+        curl -fsSL "https://deb.nodesource.com/setup_20.x" | $SUDO -E bash -
+    else
+        curl -fsSL "https://deb.nodesource.com/setup_20.x" | bash -
+    fi
+    $SUDO apt-get install -y nodejs
 }
 
 # --------------------------------------------------------------------------
