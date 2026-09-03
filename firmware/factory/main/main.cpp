@@ -324,10 +324,18 @@ static void build_splash_ui()
     lv_obj_center(logo);
 #else
     lv_obj_t *text = lv_label_create(tap_area);
-    lv_label_set_text(text, APP_SPLASH_TEXT);
     lv_obj_set_style_text_font(text, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(text, lv_color_hex(APP_SPLASH_TEXT_COLOR), 0);
-    lv_obj_center(text);
+    lv_label_set_recolor(text, true);
+    lv_label_set_text(text, APP_SPLASH_TEXT);
+    lv_obj_align(text, LV_ALIGN_CENTER, 0, -14);
+
+    lv_obj_t *sub = lv_label_create(tap_area);
+    lv_obj_set_style_text_font(sub, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(APP_SPLASH_SUB_COLOR), 0);
+    lv_obj_set_style_text_letter_space(sub, APP_SPLASH_SUB_LETTER_SPACE, 0);
+    lv_label_set_text(sub, APP_SPLASH_SUB_TEXT);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 16);
 #endif
 
     // Prefer whatever otadata already points at; fall back to the app's

@@ -77,12 +77,16 @@
 // and then auto-boots the main app. Tapping the logo/text
 // APP_SPLASH_TAPS_FOR_MENU times during the splash opens the recovery menu
 // (switch/boot either OTA slot, erase settings) instead.
-#define APP_SPLASH_BG_COLOR      0x101317   // full-screen background color
+#define APP_SPLASH_BG_COLOR      0x06223a   // full-screen background (site navy)
 #define APP_SPLASH_SHOW_LOGO     0          // 1 = show APP_SPLASH_LOGO_IMG (an
                                             // lv_img_dsc_t linked into the
                                             // factory stage), 0 = show text
-#define APP_SPLASH_TEXT          "Welcome!"
-#define APP_SPLASH_TEXT_COLOR    0xe6edf3
+// DevCon1 wordmark: LVGL recolor markup -- white "DevCon", red "1".
+#define APP_SPLASH_TEXT          "#ffffff DevCon##f20000 1#"
+#define APP_SPLASH_TEXT_COLOR    0xffffff
+#define APP_SPLASH_SUB_TEXT      "S O L U T I O N S"
+#define APP_SPLASH_SUB_COLOR     0x4fd1ff
+#define APP_SPLASH_SUB_LETTER_SPACE 3
 #define APP_SPLASH_SECONDS       3
 #define APP_SPLASH_TAPS_FOR_MENU 3          // rapid taps on the logo/text
 
